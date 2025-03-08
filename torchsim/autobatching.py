@@ -286,30 +286,22 @@ class HotswappingAutoBatcher:
         self.model = model
         self.states_iterator = states
         self.metric = metric
-        if not max_metric:
-            self.max_metric = estimate_max_metric(
-                model, self.state_slices, self.metrics, max_atoms_to_try
-            )
-        else:
-            self.max_metric = max_metric
+        self.max_metric = max_metric or None
+        self.max_atoms_to_try = max_atoms_to_try
 
         self.current_metric = 0
-        self.empty_states_iterator = False
         self.current_states_list = []
         self.current_metrics_list = []
         self.completed_idx_og_order = []
 
     def _insert_next_states(self) -> None:
         """Insert states from the iterator until max_metric is reached."""
-        if self.empty_states_iterator:
-            return
-        while self.current_metric < self.max_metric:
-            try:
-                state = next(self.states_iterator)
-            except StopIteration:
-                self.empty_states_iterator = True
-                break
+        for state in self.states_iterator:
             metric = calculate_scaling_metric(state, self.metric)
+            if self.current_metric + metric > self.max_metric:
+                # put the state back in the iterator
+                self.states_iterator = chain([state], self.states_iterator)
+                break
             self.current_metric += metric
             self.current_metrics_list += [metric]
             self.current_states_list += [state]
@@ -320,7 +312,35 @@ class HotswappingAutoBatcher:
         Returns:
             The first batch of states.
         """
+        # we need to estimate the max metric for the first batch
+        first_state = next(self.states_iterator)
+        first_metric = calculate_scaling_metric(first_state, self.metric)
+
+        # if max_metric is not set, estimate it
+        has_max_metric = bool(self.max_metric)
+        if not has_max_metric:
+            self.max_metric = estimate_max_metric(
+                self.model,
+                [first_state],
+                [first_metric],
+                max_atoms_to_try=self.max_atoms_to_try,
+            )
+            self.max_metric *= 0.8
+
+        self.current_metric = first_metric
+        self.current_states_list = [first_state]
+        self.current_metrics_list = [first_metric]
+
         self._insert_next_states()
+
+        # update estimate of max metric if it was not set
+        if not has_max_metric:
+            self.max_metric = estimate_max_metric(
+                self.model,
+                self.current_states_list,
+                self.current_metrics_list,
+                max_atoms_to_try=1_000_000,
+            )
         return concatenate_states(self.current_states_list)
 
     def next_batch(self, convergence_tensor: torch.Tensor) -> BaseState | None:
