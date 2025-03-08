@@ -70,7 +70,7 @@ def determine_max_batch_size(
                 return fib[i - 2]
             raise
 
-    return fib[-1]
+    return fib[-2]
 
 
 def split_state(state: BaseState) -> list[BaseState]:
@@ -218,7 +218,7 @@ class ChunkingAutoBatcher:
 
     def next_batch(
         self, *, return_indices: bool = False
-    ) -> BaseState | tuple[BaseState, list[int]] | None:
+    ) -> list[BaseState] | tuple[list[BaseState], list[int]] | None:
         """Get the next batch of states.
 
         Args:
@@ -233,11 +233,8 @@ class ChunkingAutoBatcher:
             state_bin = self.state_bins[self.current_state_bin]
             self.current_state_bin += 1
             if return_indices:
-                return (
-                    concatenate_states(state_bin),
-                    self.index_bins[self.current_state_bin - 1],
-                )
-            return concatenate_states(state_bin)
+                return state_bin, self.index_bins[self.current_state_bin - 1]
+            return state_bin
         return None
 
     def restore_original_order(self, state_bins: list[BaseState]) -> list[BaseState]:
