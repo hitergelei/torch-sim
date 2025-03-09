@@ -209,7 +209,7 @@ def test_hotswapping_auto_batcher(
     assert idx == [1]
 
     # Check that the converged state was removed
-    assert len(batcher.current_states_list) == 1
+    assert len(batcher.current_state_metric_idx) == 1
     assert len(batcher.completed_idx_og_order) == 1
 
     # Create a convergence tensor where the remaining state has converged

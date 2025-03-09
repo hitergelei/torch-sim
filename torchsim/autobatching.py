@@ -157,10 +157,6 @@ def estimate_max_metric(
     Returns:
         Maximum metric value that fits in GPU memory.
     """
-    # all_metrics = torch.tensor(
-    #     [calculate_scaling_metric(state_slice, metric) for state_slice in state_list]
-    # )
-
     # select one state with the min n_atoms
     min_metric = metric_values.min()
     max_metric = metric_values.max()
@@ -304,11 +300,7 @@ class HotswappingAutoBatcher:
 
         self.total_metric = 0
 
-        # TODO: could be smarter about making these all together
-        self.current_states_list = []
-        self.current_metrics_list = []
-        self.current_idx_list = []
-
+        self.current_state_metric_idx = []
         self.completed_idx_og_order = []
 
     def _insert_next_states(self) -> None:
@@ -328,9 +320,7 @@ class HotswappingAutoBatcher:
             self.total_metric += metric
 
             # TODO: could be smarter about making these all together
-            self.current_metrics_list += [metric]
-            self.current_states_list += [state]
-            self.current_idx_list += [self.iterator_idx]
+            self.current_state_metric_idx += [(state, metric, self.iterator_idx)]
             self.iterator_idx += 1
 
     def first_batch(self) -> BaseState:
@@ -355,22 +345,22 @@ class HotswappingAutoBatcher:
             self.max_metric *= 0.8
 
         self.total_metric = first_metric
-        self.current_states_list = [first_state]
-        self.current_metrics_list = [first_metric]
-        self.current_idx_list = [0]
+        self.current_state_metric_idx = [(first_state, first_metric, 0)]
         self.iterator_idx = 1
 
         self._insert_next_states()
 
         # update estimate of max metric if it was not set
+        current_states = [state for state, _, _ in self.current_state_metric_idx]
+        current_metrics = [metric for _, metric, _ in self.current_state_metric_idx]
         if not has_max_metric:
             self.max_metric = estimate_max_metric(
                 self.model,
-                self.current_states_list,
-                self.current_metrics_list,
+                current_states,
+                current_metrics,
                 max_atoms_to_try=1_000_000,
             )
-        return concatenate_states(self.current_states_list)
+        return concatenate_states(current_states)
 
     def next_batch(
         self, convergence_tensor: torch.Tensor, *, return_indices: bool = False
@@ -384,7 +374,7 @@ class HotswappingAutoBatcher:
         Returns:
             The next batch of states.
         """
-        assert len(convergence_tensor) == len(self.current_states_list)
+        assert len(convergence_tensor) == len(self.current_state_metric_idx)
         assert len(convergence_tensor.shape) == 1
 
         # find indices of all convergence_tensor elements that are True
@@ -395,21 +385,23 @@ class HotswappingAutoBatcher:
 
         # remove states at these indices
         for idx in completed_idx:
-            self.current_states_list.pop(idx)
-            self.total_metric -= self.current_metrics_list.pop(idx)
+            _, metric, _ = self.current_state_metric_idx.pop(idx)
+            self.total_metric -= metric
             self.completed_idx_og_order.append(idx + len(self.completed_idx_og_order))
-            self.current_idx_list.pop(idx)
 
         # insert next states
         self._insert_next_states()
 
-        if not self.current_states_list:
+        if not self.current_state_metric_idx:
             return None
 
-        if return_indices:
-            return self.current_states_list, self.current_idx_list
+        current_states = [state for state, _, _ in self.current_state_metric_idx]
 
-        return self.current_states_list
+        if return_indices:
+            current_idx = [idx for _, _, idx in self.current_state_metric_idx]
+            return current_states, current_idx
+
+        return current_states
 
     def restore_original_order(
         self, completed_states: list[BaseState]
