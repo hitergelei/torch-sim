@@ -6,6 +6,8 @@
 # ]
 # ///
 
+import os
+
 import torch
 from ase.build import bulk
 from mace.calculators.foundations_models import mace_mp
@@ -23,7 +25,7 @@ from torchsim.units import MetalUnits as Units
 
 
 # Set device and data type
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = "cuda" if torch.cuda.is_available() else "cpu"
 dtype = torch.float32
 
 # Option 1: Load the raw model from the downloaded model
@@ -69,10 +71,10 @@ model = UnbatchedMaceModel(
 # Run initial inference
 results = model(positions=positions, cell=cell, atomic_numbers=atomic_numbers)
 
-N_steps_nvt = 500
-N_steps_npt = 500
+N_steps_nvt = 20 if os.getenv("CI") else 2_000
+N_steps_npt = 20 if os.getenv("CI") else 2_000
 dt = 0.001 * Units.time  # Time step (1 ps)
-kT = 300 * Units.temperature  # Initial temperature (300 K)  # noqa: N816
+kT = 300 * Units.temperature  # Initial temperature (300 K)
 target_pressure = 0.0 * Units.pressure  # Target pressure (0 bar)
 
 state = {
