@@ -207,6 +207,17 @@ class ChunkingAutoBatcher:
             )
         else:
             self.max_metric = max_metric
+
+        # verify that no systems are too large
+        max_metric_value = max(self.metrics)
+        max_metric_idx = self.metrics.index(max_metric_value)
+        if max_metric_value > self.max_metric:
+            raise ValueError(
+                f"Max metric of system with index {max_metric_idx} in states: "
+                f"{max(self.metrics)} is greater than max_metric {self.max_metric}, "
+                f"please set a larger max_metric or run smaller systems metric."
+            )
+
         self.index_to_metric = dict(enumerate(self.metrics))
         self.index_bins = binpacking.to_constant_volume(
             self.index_to_metric, V_max=self.max_metric
@@ -237,7 +248,9 @@ class ChunkingAutoBatcher:
             return state_bin
         return None
 
-    def restore_original_order(self, state_bins: list[BaseState]) -> list[BaseState]:
+    def restore_original_order(
+        self, state_bins: list[list[BaseState]]
+    ) -> list[BaseState]:
         """Take the state bins and reorder them into a list.
 
         Args:
@@ -246,6 +259,9 @@ class ChunkingAutoBatcher:
         Returns:
             States in their original order.
         """
+        # TODO: need to assert at some point that the input states list
+        # are all batch size 1
+
         # Flatten lists
         all_states = list(chain.from_iterable(state_bins))
         original_indices = list(chain.from_iterable(self.index_bins))
@@ -286,22 +302,36 @@ class HotswappingAutoBatcher:
         self.max_metric = max_metric or None
         self.max_atoms_to_try = max_atoms_to_try
 
-        self.current_metric = 0
+        self.total_metric = 0
+
+        # TODO: could be smarter about making these all together
         self.current_states_list = []
         self.current_metrics_list = []
+        self.current_idx_list = []
+
         self.completed_idx_og_order = []
 
     def _insert_next_states(self) -> None:
         """Insert states from the iterator until max_metric is reached."""
         for state in self.states_iterator:
             metric = calculate_scaling_metric(state, self.metric)
-            if self.current_metric + metric > self.max_metric:
+            if metric > self.max_metric:
+                raise ValueError(
+                    f"State metric {metric} is greater than max_metric "
+                    f"{self.max_metric}, please set a larger max_metric "
+                    f"or run smaller systems metric."
+                )
+            if self.total_metric + metric > self.max_metric:
                 # put the state back in the iterator
                 self.states_iterator = chain([state], self.states_iterator)
                 break
-            self.current_metric += metric
+            self.total_metric += metric
+
+            # TODO: could be smarter about making these all together
             self.current_metrics_list += [metric]
             self.current_states_list += [state]
+            self.current_idx_list += [self.iterator_idx]
+            self.iterator_idx += 1
 
     def first_batch(self) -> BaseState:
         """Get the first batch of states.
@@ -324,9 +354,11 @@ class HotswappingAutoBatcher:
             )
             self.max_metric *= 0.8
 
-        self.current_metric = first_metric
+        self.total_metric = first_metric
         self.current_states_list = [first_state]
         self.current_metrics_list = [first_metric]
+        self.current_idx_list = [0]
+        self.iterator_idx = 1
 
         self._insert_next_states()
 
@@ -340,11 +372,14 @@ class HotswappingAutoBatcher:
             )
         return concatenate_states(self.current_states_list)
 
-    def next_batch(self, convergence_tensor: torch.Tensor) -> BaseState | None:
+    def next_batch(
+        self, convergence_tensor: torch.Tensor, *, return_indices: bool = False
+    ) -> list[BaseState] | tuple[list[BaseState], list[int]] | None:
         """Get the next batch of states based on convergence.
 
         Args:
             convergence_tensor: Boolean tensor indicating which states have converged.
+            return_indices: Whether to return indices along with the batch.
 
         Returns:
             The next batch of states.
@@ -361,8 +396,9 @@ class HotswappingAutoBatcher:
         # remove states at these indices
         for idx in completed_idx:
             self.current_states_list.pop(idx)
-            self.current_metric -= self.current_metrics_list.pop(idx)
+            self.total_metric -= self.current_metrics_list.pop(idx)
             self.completed_idx_og_order.append(idx + len(self.completed_idx_og_order))
+            self.current_idx_list.pop(idx)
 
         # insert next states
         self._insert_next_states()
@@ -370,7 +406,10 @@ class HotswappingAutoBatcher:
         if not self.current_states_list:
             return None
 
-        return concatenate_states(self.current_states_list)
+        if return_indices:
+            return self.current_states_list, self.current_idx_list
+
+        return self.current_states_list
 
     def restore_original_order(
         self, completed_states: list[BaseState]
