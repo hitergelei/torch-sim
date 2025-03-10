@@ -157,6 +157,8 @@ def estimate_max_metric(
     Returns:
         Maximum metric value that fits in GPU memory.
     """
+    metric_values = torch.tensor(metric_values)
+
     # select one state with the min n_atoms
     min_metric = metric_values.min()
     max_metric = metric_values.max()
@@ -201,6 +203,7 @@ class ChunkingAutoBatcher:
             self.max_metric = estimate_max_metric(
                 model, self.state_slices, self.metrics, max_atoms_to_try
             )
+            print(f"Max metric calculated: {self.max_metric}")
         else:
             self.max_metric = max_metric
 
@@ -243,6 +246,15 @@ class ChunkingAutoBatcher:
                 return state_bin, self.index_bins[self.current_state_bin - 1]
             return state_bin
         return None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        next_batch = self.next_batch()
+        if next_batch is None:
+            raise StopIteration
+        return next_batch
 
     def restore_original_order(
         self, state_bins: list[list[BaseState]]
@@ -323,7 +335,7 @@ class HotswappingAutoBatcher:
             self.current_state_metric_idx += [(state, metric, self.iterator_idx)]
             self.iterator_idx += 1
 
-    def first_batch(self) -> BaseState:
+    def first_batch(self) -> list[BaseState]:
         """Get the first batch of states.
 
         Returns:
@@ -340,7 +352,7 @@ class HotswappingAutoBatcher:
                 self.model,
                 [first_state],
                 [first_metric],
-                max_atoms_to_try=self.max_atoms_to_try,
+                max_atoms=self.max_atoms_to_try,
             )
             self.max_metric *= 0.8
 
@@ -358,13 +370,21 @@ class HotswappingAutoBatcher:
                 self.model,
                 current_states,
                 current_metrics,
-                max_atoms_to_try=1_000_000,
+                max_atoms=self.max_atoms_to_try,
             )
-        return concatenate_states(current_states)
+            print(f"Max metric calculated: {self.max_metric}")
+        return current_states
 
     def next_batch(
-        self, convergence_tensor: torch.Tensor, *, return_indices: bool = False
-    ) -> list[BaseState] | tuple[list[BaseState], list[int]] | None:
+        self,
+        updated_concat_state: BaseState,
+        convergence_tensor: torch.Tensor,
+        *,
+        return_indices: bool = False,
+    ) -> (
+        tuple[list[BaseState], list[BaseState]]
+        | tuple[list[BaseState], list[BaseState], list[int]]
+    ):
         """Get the next batch of states based on convergence.
 
         Args:
@@ -374,6 +394,19 @@ class HotswappingAutoBatcher:
         Returns:
             The next batch of states.
         """
+        # TODO: this is bloated and we need to clean this up
+        # to make it more efficient
+        states_list = split_state(updated_concat_state)
+        new_current_state_metric_idx = []
+        for i, state in enumerate(states_list):
+            new_tup = (
+                state,
+                self.current_state_metric_idx[i][1],
+                self.current_state_metric_idx[i][2],
+            )
+            new_current_state_metric_idx.append(new_tup)
+        self.current_state_metric_idx = new_current_state_metric_idx
+
         assert len(convergence_tensor) == len(self.current_state_metric_idx)
         assert len(convergence_tensor.shape) == 1
 
@@ -384,8 +417,10 @@ class HotswappingAutoBatcher:
         completed_idx.sort(reverse=True)
 
         # remove states at these indices
+        completed_states = []
         for idx in completed_idx:
-            _, metric, _ = self.current_state_metric_idx.pop(idx)
+            state, metric, _ = self.current_state_metric_idx.pop(idx)
+            completed_states.append(state)
             self.total_metric -= metric
             self.completed_idx_og_order.append(idx + len(self.completed_idx_og_order))
 
@@ -393,7 +428,7 @@ class HotswappingAutoBatcher:
         self._insert_next_states()
 
         if not self.current_state_metric_idx:
-            return None
+            return [], []
 
         current_states = [state for state, _, _ in self.current_state_metric_idx]
 
@@ -401,7 +436,7 @@ class HotswappingAutoBatcher:
             current_idx = [idx for _, _, idx in self.current_state_metric_idx]
             return current_states, current_idx
 
-        return current_states
+        return current_states, completed_states
 
     def restore_original_order(
         self, completed_states: list[BaseState]
