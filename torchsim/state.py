@@ -310,7 +310,7 @@ def slice_substate(
     return type(state)(**sliced_attrs)
 
 
-def concatenate_states(  # noqa: C901
+def concatenate_states(
     states: list[BaseState], device: torch.device | None = None
 ) -> BaseState:
     """Concatenate a list of BaseStates into a single BaseState.
@@ -336,57 +336,56 @@ def concatenate_states(  # noqa: C901
     if not all(isinstance(state, state_class) for state in states):
         raise TypeError("All states must be of the same type")
 
-    # Categorize properties by scope for each state
-    property_scopes = [infer_property_scope(state) for state in states]
+    # Use the target device or default to the first state's device
+    target_device = device or first_state.device
 
-    # Collect all property names across all states
-    all_props = set()
-    for scope in property_scopes:
-        for scope_type in scope.values():
-            all_props.update(scope_type)
+    # Get property scopes from the first state to identify global/per-atom/per-batch properties
+    first_scope = infer_property_scope(first_state)
+    global_props = set(first_scope["global"])
+    per_atom_props = set(first_scope["per_atom"])
+    per_batch_props = set(first_scope["per_batch"])
 
-    # Initialize dictionaries to hold concatenated properties
-    concatenated = {}
+    # Initialize result with global properties from first state
+    concatenated = {prop: getattr(first_state, prop) for prop in global_props}
 
-    # Process global properties (take from first state)
-    for prop_name in property_scopes[0]["global"]:
-        concatenated[prop_name] = getattr(first_state, prop_name)
-
-    # Process per-atom properties (concatenate)
-    for prop_name in set().union(*[scope["per_atom"] for scope in property_scopes]):
-        tensors = [
-            getattr(state, prop_name) for state in states if hasattr(state, prop_name)
-        ]
-        if tensors:
-            concatenated[prop_name] = torch.cat(tensors, dim=0)
-
-    # Process per-batch properties (concatenate)
-    for prop_name in set().union(*[scope["per_batch"] for scope in property_scopes]):
-        tensors = [
-            getattr(state, prop_name) for state in states if hasattr(state, prop_name)
-        ]
-        if tensors:
-            concatenated[prop_name] = torch.cat(tensors, dim=0)
-
-    # Create new batch indices that account for existing batch structure
+    # Pre-allocate lists for tensors to concatenate
+    per_atom_tensors = {prop: [] for prop in per_atom_props}
+    per_batch_tensors = {prop: [] for prop in per_batch_props}
     new_batch_indices = []
     batch_offset = 0
 
-    device = device or states[0].device
+    # Process all states in a single pass
     for state in states:
-        state = state_to_device(state, device)
+        # Move state to target device if needed
+        if state.device != target_device:
+            state = state_to_device(state, target_device)
 
-        # Get the number of unique batches in this state
-        num_batches = len(torch.unique(state.batch))
+        # Collect per-atom properties
+        for prop in per_atom_props:
+            # if hasattr(state, prop):
+            per_atom_tensors[prop].append(getattr(state, prop))
 
-        # For each atom, map its current batch index to a new index with the offset
+        # Collect per-batch properties
+        for prop in per_batch_props:
+            # if hasattr(state, prop):
+            per_batch_tensors[prop].append(getattr(state, prop))
+
+        # Update batch indices
+        num_batches = state.n_batches
         new_indices = state.batch + batch_offset
         new_batch_indices.append(new_indices)
-
-        # Update the offset for the next state
         batch_offset += num_batches
 
-    # Concatenate all batch indices
+    # Concatenate collected tensors
+    for prop, tensors in per_atom_tensors.items():
+        # if tensors:
+        concatenated[prop] = torch.cat(tensors, dim=0)
+
+    for prop, tensors in per_batch_tensors.items():
+        # if tensors:
+        concatenated[prop] = torch.cat(tensors, dim=0)
+
+    # Concatenate batch indices
     concatenated["batch"] = torch.cat(new_batch_indices)
 
     # Create a new instance of the same class
