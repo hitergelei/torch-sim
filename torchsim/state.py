@@ -23,7 +23,7 @@ import copy
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Self
-
+from collections import defaultdict
 import torch
 
 
@@ -96,7 +96,9 @@ class BaseState:
             )
 
         if self.batch is None:
-            self.batch = torch.zeros(self.n_atoms, device=self.device, dtype=torch.int64)
+            self.batch = torch.zeros(
+                self.n_atoms, device=self.device, dtype=torch.int64
+            )
         else:
             # assert that batch indices are unique consecutive integers
             _, counts = torch.unique_consecutive(self.batch, return_counts=True)
@@ -263,6 +265,111 @@ def infer_property_scope(
     return scope
 
 
+def split_state(
+    state: BaseState,
+    ambiguous_handling: Literal["error", "globalize"] = "error",
+) -> list[BaseState]:
+    """Split a state into a list of states, each containing a single batch element.
+    This also needs to be optimized."""
+    # TODO: make this more efficient
+    scope = infer_property_scope(state, ambiguous_handling=ambiguous_handling)
+
+    batch_sizes = torch.bincount(state.batch).tolist()
+
+    global_attrs = {}
+
+    # Process global properties (unchanged)
+    for attr_name in scope["global"]:
+        global_attrs[attr_name] = getattr(state, attr_name)
+
+    sliced_attrs = {}
+
+    # Process per-atom properties (filter by batch mask)
+    for attr_name in scope["per_atom"]:
+        if attr_name == "batch":
+            continue
+        attr_value = getattr(state, attr_name)
+        sliced_attrs[attr_name] = torch.split(attr_value, batch_sizes, dim=0)
+
+    # Process per-batch properties (select the specific batch)
+    for attr_name in scope["per_batch"]:
+        attr_value = getattr(state, attr_name)
+        sliced_attrs[attr_name] = torch.split(attr_value, 1, dim=0)
+
+    states = []
+    for i in range(state.n_batches):
+        state = type(state)(
+            batch=torch.zeros(batch_sizes[i], device=state.device, dtype=torch.int64),
+            **{attr_name: sliced_attrs[attr_name][i] for attr_name in sliced_attrs},
+            **global_attrs,
+        )
+        states.append(state)
+
+    return states
+
+
+def pop_states(
+    state: BaseState,
+    pop_indices: torch.Tensor,
+    ambiguous_handling: Literal["error", "globalize"] = "error",
+) -> tuple[BaseState, list[BaseState]]:
+    """Pop off the states with masking in a way that
+    minimizes memory operations. We can use the mask to make the popped
+    and remaining states in place then split the popped states.
+
+    Infer batchwise atomwise should also be optimized.
+    """
+    scope = infer_property_scope(state, ambiguous_handling=ambiguous_handling)
+
+    # Process global properties (unchanged)
+    global_attrs = {}
+    for attr_name in scope["global"]:
+        global_attrs[attr_name] = getattr(state, attr_name)
+
+    keep_attrs = {}
+    pop_attrs = {}
+
+    # Process per-atom properties (filter by batch mask)
+    for attr_name in scope["per_atom"]:
+        keep_mask = torch.isin(state.batch, pop_indices, invert=True)
+        attr_value = getattr(state, attr_name)
+
+        if attr_name == "batch":
+            n_popped = len(pop_indices)
+            n_kept = state.n_batches - n_popped
+            _, keep_counts = torch.unique_consecutive(
+                attr_value[keep_mask], return_counts=True
+            )
+            keep_batch_indices = torch.repeat_interleave(
+                torch.arange(n_kept, device=state.device), keep_counts
+            )
+            keep_attrs[attr_name] = keep_batch_indices
+
+            _, pop_counts = torch.unique_consecutive(
+                attr_value[~keep_mask], return_counts=True
+            )
+            pop_batch_indices = torch.repeat_interleave(
+                torch.arange(n_popped, device=state.device), pop_counts
+            )
+            pop_attrs[attr_name] = pop_batch_indices
+            continue
+
+        keep_attrs[attr_name] = attr_value[keep_mask]
+        pop_attrs[attr_name] = attr_value[~keep_mask]
+
+    # Process per-batch properties (select the specific batch)
+    for attr_name in scope["per_batch"]:
+        attr_value = getattr(state, attr_name)
+        batch_range = torch.arange(state.n_batches, device=state.device)
+        keep_mask = torch.isin(batch_range, pop_indices, invert=True)
+        keep_attrs[attr_name] = attr_value[keep_mask]
+        pop_attrs[attr_name] = attr_value[~keep_mask]
+
+    keep_state = type(state)(**keep_attrs, **global_attrs)
+    pop_states = split_state(type(state)(**pop_attrs, **global_attrs))
+    return keep_state, pop_states
+
+
 def slice_substate(
     state: BaseState,
     batch_index: int,
@@ -278,6 +385,8 @@ def slice_substate(
     Returns:
         A BaseState object containing the sliced substate
     """
+    # TODO: should share more logic with pop_states, basically the same
+    # TODO: should be renamed slice_state
     scope = infer_property_scope(state, ambiguous_handling=ambiguous_handling)
 
     # Create a mask for the atoms in the specified batch

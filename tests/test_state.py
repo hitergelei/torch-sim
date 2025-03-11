@@ -7,6 +7,8 @@ from torchsim.state import (
     concatenate_states,
     infer_property_scope,
     slice_substate,
+    split_state,
+    pop_states,
 )
 from torchsim.unbatched_integrators import MDState
 
@@ -87,7 +89,9 @@ def test_concatenate_two_si_states(
     assert concatenated.positions.shape == si_double_base_state.positions.shape
     assert concatenated.masses.shape == si_double_base_state.masses.shape
     assert concatenated.cell.shape == si_double_base_state.cell.shape
-    assert concatenated.atomic_numbers.shape == si_double_base_state.atomic_numbers.shape
+    assert (
+        concatenated.atomic_numbers.shape == si_double_base_state.atomic_numbers.shape
+    )
     assert concatenated.batch.shape == si_double_base_state.batch.shape
 
     # Check batch indices
@@ -195,3 +199,56 @@ def test_concatenate_double_si_and_fe_states(
         si_slice_1.positions, slice_substate(si_double_base_state, 1).positions
     )
     assert torch.allclose(fe_slice.positions, fe_fcc_state.positions)
+
+
+def test_split_state(si_double_base_state: BaseState) -> None:
+    """Test splitting a state into a list of states."""
+    states = split_state(si_double_base_state)
+    assert len(states) == si_double_base_state.n_batches
+    for state in states:
+        assert isinstance(state, BaseState)
+        assert state.positions.shape == (8, 3)
+        assert state.masses.shape == (8,)
+        assert state.cell.shape == (1, 3, 3)
+        assert state.atomic_numbers.shape == (8,)
+        assert torch.allclose(state.batch, torch.zeros_like(state.batch))
+
+
+def test_split_many_states(
+    si_base_state: BaseState, ar_base_state: BaseState, fe_fcc_state: BaseState
+) -> None:
+    """Test splitting a state into a list of states."""
+    states = [si_base_state, ar_base_state, fe_fcc_state]
+    concatenated = concatenate_states(states)
+    split_states = split_state(concatenated)
+    for state, sub_state in zip(states, split_states):
+        assert isinstance(sub_state, BaseState)
+        assert torch.allclose(sub_state.positions, state.positions)
+        assert torch.allclose(sub_state.masses, state.masses)
+        assert torch.allclose(sub_state.cell, state.cell)
+        assert torch.allclose(sub_state.atomic_numbers, state.atomic_numbers)
+        assert torch.allclose(sub_state.batch, state.batch)
+
+    assert len(states) == 3
+
+
+def test_pop_states(
+    si_base_state: BaseState, ar_base_state: BaseState, fe_fcc_state: BaseState
+) -> None:
+    """Test popping states from a state."""
+    states = [si_base_state, ar_base_state, fe_fcc_state]
+    concatenated_states = concatenate_states(states)
+    kept_state, popped_states = pop_states(concatenated_states, torch.tensor([0]))
+
+    assert isinstance(kept_state, BaseState)
+    assert isinstance(popped_states, list)
+    assert len(popped_states) == 1
+    assert isinstance(popped_states[0], BaseState)
+    assert popped_states[0].positions.shape == si_base_state.positions.shape
+
+    len_kept = ar_base_state.n_atoms + fe_fcc_state.n_atoms
+    assert kept_state.positions.shape == (len_kept, 3)
+    assert kept_state.masses.shape == (len_kept,)
+    assert kept_state.cell.shape == (2, 3, 3)
+    assert kept_state.atomic_numbers.shape == (len_kept,)
+    assert kept_state.batch.shape == (len_kept,)
