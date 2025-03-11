@@ -184,7 +184,7 @@ class ChunkingAutoBatcher:
             states: States to batch.
             metric: Metric to use for batching.
             max_metric: Maximum metric value per batch.
-            max_atoms_to_try: Maximum number of atoms to try when estimating max_metric.
+                max_atoms_to_try: Maximum number of atoms to try when estimating max_metric.
         """
         self.state_slices = (
             split_state(states) if isinstance(states, BaseState) else states
@@ -215,14 +215,14 @@ class ChunkingAutoBatcher:
         self.index_bins = binpacking.to_constant_volume(
             self.index_to_metric, V_max=self.max_metric
         )
-        self.state_bins = []
+        self.batched_states = []
         for index_bin in self.index_bins:
-            self.state_bins.append([self.state_slices[i] for i in index_bin])
+            self.batched_states.append([self.state_slices[i] for i in index_bin])
         self.current_state_bin = 0
 
     def next_batch(
         self, *, return_indices: bool = False
-    ) -> list[BaseState] | tuple[list[BaseState], list[int]] | None:
+    ) -> BaseState | tuple[list[BaseState], list[int]] | None:
         """Get the next batch of states.
 
         Args:
@@ -237,12 +237,13 @@ class ChunkingAutoBatcher:
 
         # TODO: need to think about how this intersects with reporting too
         # TODO: definitely a clever treatment to be done with iterators here
-        if self.current_state_bin < len(self.state_bins):
-            state_bin = self.state_bins[self.current_state_bin]
+        if self.current_state_bin < len(self.batched_states):
+            state_bin = self.batched_states[self.current_state_bin]
+            state = concatenate_states(state_bin)
             self.current_state_bin += 1
             if return_indices:
-                return state_bin, self.index_bins[self.current_state_bin - 1]
-            return state_bin
+                return state, self.index_bins[self.current_state_bin - 1]
+            return state
         return None
 
     def __iter__(self):
@@ -255,28 +256,31 @@ class ChunkingAutoBatcher:
         return next_batch
 
     def restore_original_order(
-        self, state_bins: list[list[BaseState]]
+        self, batched_states: list[BaseState]
     ) -> list[BaseState]:
         """Take the state bins and reorder them into a list.
 
         Args:
-            state_bins: List of state batches to reorder.
+            batched_states: List of state batches to reorder.
 
         Returns:
             States in their original order.
         """
-        # TODO: need to assert at some point that the input states list
-        # are all batch size 1
-
-        # TODO: should act on full states, not state slices
+        state_bins = [split_state(state) for state in batched_states]
 
         # Flatten lists
         all_states = list(chain.from_iterable(state_bins))
         original_indices = list(chain.from_iterable(self.index_bins))
 
+        if len(all_states) != len(original_indices):
+            raise ValueError(
+                f"Number of states ({len(all_states)}) does not match "
+                f"number of original indices ({len(original_indices)})"
+            )
+
         # sort states by original indices
         indexed_states = list(zip(original_indices, all_states, strict=False))
-        return [state for _, state in sorted(indexed_states)]
+        return [state for _, state in sorted(indexed_states, key=lambda x: x[0])]
 
 
 class HotswappingAutoBatcher:
@@ -345,9 +349,7 @@ class HotswappingAutoBatcher:
 
         return new_states
 
-    def _delete_old_states(self, completed_idx: torch.Tensor) -> None:
-        completed_idx = completed_idx.tolist()
-
+    def _delete_old_states(self, completed_idx: list[int]) -> None:
         # Sort in descending order to avoid index shifting problems
         completed_idx.sort(reverse=True)
 
@@ -355,10 +357,7 @@ class HotswappingAutoBatcher:
         for idx in completed_idx:
             og_idx = self.current_idx.pop(idx)
             self.current_metrics.pop(idx)
-            # self.total_metric -= metric
-            self.completed_idx_og_order.append(
-                og_idx + len(self.completed_idx_og_order)
-            )
+            self.completed_idx_og_order.append(og_idx)
 
     def _first_batch(self) -> BaseState:
         """Get the first batch of states.
@@ -437,13 +436,14 @@ class HotswappingAutoBatcher:
         assert len(convergence_tensor.shape) == 1
         assert updated_state.n_batches > 0
 
-        completed_idx_tensor = torch.where(convergence_tensor)[0]
+        completed_idx = torch.where(convergence_tensor)[0].tolist()
+        completed_idx.sort(reverse=True)
 
         remaining_state, completed_states = pop_states(
-            updated_state, completed_idx_tensor
+            updated_state, completed_idx
         )
 
-        self._delete_old_states(completed_idx_tensor)
+        self._delete_old_states(completed_idx)
         next_states = self._get_next_states()
 
         # there are no states left to run, return the completed states
@@ -493,4 +493,4 @@ class HotswappingAutoBatcher:
         )
 
         # Sort by original index
-        return [state for _, state in sorted(indexed_states)]
+        return [state for _, state in sorted(indexed_states, key=lambda x: x[0])]

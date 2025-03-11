@@ -7,7 +7,11 @@ from torchsim.integrators import nvt_langevin
 from torchsim.models.mace import MaceModel
 from torchsim.optimizers import unit_cell_fire
 from torchsim.runners import atoms_to_state
-from torchsim.autobatching import HotswappingAutoBatcher, ChunkingAutoBatcher, split_state
+from torchsim.autobatching import (
+    HotswappingAutoBatcher,
+    ChunkingAutoBatcher,
+    split_state,
+)
 from torchsim.units import MetalUnits
 from torchsim.state import concatenate_states, BaseState
 
@@ -34,21 +38,14 @@ fire_init, fire_update = unit_cell_fire(mace_model)
 si_fire_state = fire_init(si_state)
 fe_fire_state = fire_init(fe_state)
 
-fire_states = [si_fire_state, fe_fire_state] * 100
+fire_states = [si_fire_state, fe_fire_state] * 20
 fire_states = [state.clone() for state in fire_states]
 for state in fire_states:
     state.positions += torch.randn_like(state.positions) * 0.01
 
-
+len(fire_states)
 # %%
 
-batcher = HotswappingAutoBatcher(
-    model=mace_model,
-    states=fire_states,
-    metric="n_atoms_x_density",
-    # max_metric=400_000,
-    max_metric=100_000,
-)
 
 def convergence_fn(state: BaseState) -> bool:
     batch_wise_max_force = torch.zeros(state.n_batches, device=state.device)
@@ -62,34 +59,43 @@ def convergence_fn(state: BaseState) -> bool:
     return batch_wise_max_force < 1e-1
 
 
-next_batch = batcher.first_batch()
-
 # %%
-all_completed_states = []
-while True:
-    state = concatenate_states(next_batch)
+batcher = HotswappingAutoBatcher(
+    model=mace_model,
+    states=fire_states,
+    metric="n_atoms_x_density",
+    max_metric=400_000,
+    # max_metric=400_000,
+)
 
-    print("Starting new batch.")
+all_completed_states, convergence_tensor = [], None
+while True:
+    print(f"Starting new batch of {state.n_batches} states.")
+
+    state, completed_states = batcher.next_batch(state, convergence_tensor)
+    print("Number of completed states", len(completed_states))
+
+    all_completed_states.extend(completed_states)
+    if state is None:
+        break
+
     # run 10 steps, arbitrary number
     for i in range(10):
         state = fire_update(state)
-
     convergence_tensor = convergence_fn(state)
 
-    next_batch, completed_states = batcher.next_batch(state, convergence_tensor)
-
-    print("number of completed states", len(completed_states))
-
-    if not next_batch:
-        print("No more batches to run.")
-        break
-
-    all_completed_states.extend(completed_states)
 
 
 # %%
+batcher.restore_original_order(all_completed_states)
+# %%
+sorted(batcher.completed_idx_og_order)
 
-nvt_init, nvt_update = nvt_langevin(model=mace_model, dt=0.001, kT=300 * MetalUnits.temperature)
+# %%
+
+nvt_init, nvt_update = nvt_langevin(
+    model=mace_model, dt=0.001, kT=300 * MetalUnits.temperature
+)
 
 
 si_state = atoms_to_state(si_atoms, device=device, dtype=torch.float64)
@@ -113,7 +119,6 @@ batcher = ChunkingAutoBatcher(
 
 finished_states = []
 for batch in batcher:
-    print(f"Starting new batch of size {len(batch)}")
     full_state = concatenate_states(batch)
     for _ in range(100):
 
@@ -123,3 +128,10 @@ for batch in batcher:
 
 # %%
 len(finished_states)
+
+
+# %%
+t = torch.tensor([1, 1, 3, 3, 3, 3])
+torch.bincount(t)
+_, counts = torch.unique_consecutive(t, return_counts=True)
+counts
