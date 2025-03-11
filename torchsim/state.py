@@ -23,7 +23,7 @@ import copy
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Self
-from collections import defaultdict
+
 import torch
 
 
@@ -96,9 +96,7 @@ class BaseState:
             )
 
         if self.batch is None:
-            self.batch = torch.zeros(
-                self.n_atoms, device=self.device, dtype=torch.int64
-            )
+            self.batch = torch.zeros(self.n_atoms, device=self.device, dtype=torch.int64)
         else:
             # assert that batch indices are unique consecutive integers
             _, counts = torch.unique_consecutive(self.batch, return_counts=True)
@@ -270,7 +268,8 @@ def split_state(
     ambiguous_handling: Literal["error", "globalize"] = "error",
 ) -> list[BaseState]:
     """Split a state into a list of states, each containing a single batch element.
-    This also needs to be optimized."""
+    This also needs to be optimized.
+    """
     # TODO: make this more efficient
     scope = infer_property_scope(state, ambiguous_handling=ambiguous_handling)
 

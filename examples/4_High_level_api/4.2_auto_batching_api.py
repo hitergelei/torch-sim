@@ -1,25 +1,29 @@
+# /// script
+# dependencies = [
+#     "mace-torch>=0.3.10",
+#     "pymatgen>=2025.2.18",
+# ]
+# ///
+
+
 # %%
 import torch
 from ase.build import bulk
 from mace.calculators.foundations_models import mace_mp
 
+from torchsim.autobatching import ChunkingAutoBatcher, HotswappingAutoBatcher, split_state
 from torchsim.integrators import nvt_langevin
 from torchsim.models.mace import MaceModel
 from torchsim.optimizers import unit_cell_fire
 from torchsim.runners import atoms_to_state
-from torchsim.autobatching import (
-    HotswappingAutoBatcher,
-    ChunkingAutoBatcher,
-    split_state,
-)
+from torchsim.state import BaseState, concatenate_states
 from torchsim.units import MetalUnits
-from torchsim.state import concatenate_states, BaseState
 
 
 si_atoms = bulk("Si", "fcc", a=5.43, cubic=True).repeat((3, 3, 3))
 fe_atoms = bulk("Fe", "fcc", a=5.43, cubic=True).repeat((3, 3, 3))
 
-device = torch.device("cuda")
+device = torch.device("cpu")
 
 mace = mace_mp(model="small", return_raw_model=True)
 mace_model = MaceModel(
@@ -44,9 +48,9 @@ for state in fire_states:
     state.positions += torch.randn_like(state.positions) * 0.01
 
 len(fire_states)
+
+
 # %%
-
-
 def convergence_fn(state: BaseState) -> bool:
     batch_wise_max_force = torch.zeros(state.n_batches, device=state.device)
     max_forces = state.forces.norm(dim=1)
@@ -80,19 +84,20 @@ while True:
         break
 
     # run 10 steps, arbitrary number
-    for i in range(10):
+    for _step in range(10):
         state = fire_update(state)
     convergence_tensor = convergence_fn(state)
 
 
-
 # %%
 batcher.restore_original_order(all_completed_states)
+
+
 # %%
 sorted(batcher.completed_idx_og_order)
 
-# %%
 
+# %%
 nvt_init, nvt_update = nvt_langevin(
     model=mace_model, dt=0.001, kT=300 * MetalUnits.temperature
 )
@@ -121,10 +126,10 @@ finished_states = []
 for batch in batcher:
     full_state = concatenate_states(batch)
     for _ in range(100):
-
         full_state = nvt_update(full_state)
 
     finished_states.extend(split_state(full_state))
+
 
 # %%
 len(finished_states)
@@ -134,4 +139,5 @@ len(finished_states)
 t = torch.tensor([1, 1, 3, 3, 3, 3])
 torch.bincount(t)
 _, counts = torch.unique_consecutive(t, return_counts=True)
-counts
+
+print(f"{counts=}")

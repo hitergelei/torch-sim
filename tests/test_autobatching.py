@@ -296,7 +296,6 @@ def test_hotswapping_auto_batcher_restore_order(
 def test_hotswapping_with_fire(
     si_base_state: BaseState, fe_fcc_state: BaseState, lj_calculator: LennardJonesModel
 ) -> None:
-
     fire_init, fire_update = unit_cell_fire(lj_calculator)
 
     si_fire_state = fire_init(si_base_state)
@@ -334,7 +333,7 @@ def test_hotswapping_with_fire(
     while True:
         print("Starting new batch.")
         # run 10 steps, arbitrary number
-        for i in range(10):
+        for _step in range(10):
             state = fire_update(state)
 
         convergence_tensor = convergence_fn(state)

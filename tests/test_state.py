@@ -6,9 +6,9 @@ from torchsim.state import (
     BaseState,
     concatenate_states,
     infer_property_scope,
+    pop_states,
     slice_substate,
     split_state,
-    pop_states,
 )
 from torchsim.unbatched_integrators import MDState
 
@@ -89,9 +89,7 @@ def test_concatenate_two_si_states(
     assert concatenated.positions.shape == si_double_base_state.positions.shape
     assert concatenated.masses.shape == si_double_base_state.masses.shape
     assert concatenated.cell.shape == si_double_base_state.cell.shape
-    assert (
-        concatenated.atomic_numbers.shape == si_double_base_state.atomic_numbers.shape
-    )
+    assert concatenated.atomic_numbers.shape == si_double_base_state.atomic_numbers.shape
     assert concatenated.batch.shape == si_double_base_state.batch.shape
 
     # Check batch indices
@@ -221,7 +219,7 @@ def test_split_many_states(
     states = [si_base_state, ar_base_state, fe_fcc_state]
     concatenated = concatenate_states(states)
     split_states = split_state(concatenated)
-    for state, sub_state in zip(states, split_states):
+    for state, sub_state in zip(states, split_states, strict=True):
         assert isinstance(sub_state, BaseState)
         assert torch.allclose(sub_state.positions, state.positions)
         assert torch.allclose(sub_state.masses, state.masses)

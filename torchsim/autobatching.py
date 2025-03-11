@@ -184,7 +184,7 @@ class ChunkingAutoBatcher:
             states: States to batch.
             metric: Metric to use for batching.
             max_metric: Maximum metric value per batch.
-                max_atoms_to_try: Maximum number of atoms to try when estimating max_metric.
+                max_atoms_to_try: Max number of atoms to try when estimating max_metric.
         """
         self.state_slices = (
             split_state(states) if isinstance(states, BaseState) else states
@@ -255,9 +255,7 @@ class ChunkingAutoBatcher:
             raise StopIteration
         return next_batch
 
-    def restore_original_order(
-        self, batched_states: list[BaseState]
-    ) -> list[BaseState]:
+    def restore_original_order(self, batched_states: list[BaseState]) -> list[BaseState]:
         """Take the state bins and reorder them into a list.
 
         Args:
@@ -390,12 +388,12 @@ class HotswappingAutoBatcher:
         if not has_max_metric:
             self.max_metric = estimate_max_metric(
                 self.model,
-                [first_state] + states,
+                [first_state, *states],
                 self.current_metrics,
                 max_atoms=self.max_atoms_to_try,
             )
             print(f"Max metric calculated: {self.max_metric}")
-        return concatenate_states([first_state] + states), []
+        return concatenate_states([first_state, *states]), []
 
     def next_batch(
         self,
@@ -403,9 +401,7 @@ class HotswappingAutoBatcher:
         convergence_tensor: torch.Tensor | None = None,
         *,
         return_indices: bool = False,
-    ) -> (
-        tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]
-    ):
+    ) -> tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]:
         """Get the next batch of states based on convergence.
 
         Args:
@@ -439,9 +435,7 @@ class HotswappingAutoBatcher:
         completed_idx = torch.where(convergence_tensor)[0].tolist()
         completed_idx.sort(reverse=True)
 
-        remaining_state, completed_states = pop_states(
-            updated_state, completed_idx
-        )
+        remaining_state, completed_states = pop_states(updated_state, completed_idx)
 
         self._delete_old_states(completed_idx)
         next_states = self._get_next_states()
@@ -456,7 +450,7 @@ class HotswappingAutoBatcher:
 
         # concatenate remaining state with next states
         if remaining_state.n_batches > 0:
-            next_states = [remaining_state] + next_states
+            next_states = [remaining_state, *next_states]
         next_batch = concatenate_states(next_states)
 
         if return_indices:
