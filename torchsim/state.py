@@ -310,7 +310,7 @@ def split_state(
 
 def pop_states(
     state: BaseState,
-    pop_indices: torch.Tensor,
+    pop_indices: list[int],
     ambiguous_handling: Literal["error", "globalize"] = "error",
 ) -> tuple[BaseState, list[BaseState]]:
     """Pop off the states with masking in a way that
@@ -321,6 +321,8 @@ def pop_states(
     """
     if len(pop_indices) == 0:
         return state, []
+
+    pop_indices = torch.tensor(pop_indices, device=state.device, dtype=torch.int64)
 
     scope = infer_property_scope(state, ambiguous_handling=ambiguous_handling)
 
