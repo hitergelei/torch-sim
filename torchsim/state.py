@@ -319,6 +319,9 @@ def pop_states(
 
     Infer batchwise atomwise should also be optimized.
     """
+    if len(pop_indices) == 0:
+        return state, []
+
     scope = infer_property_scope(state, ambiguous_handling=ambiguous_handling)
 
     # Process global properties (unchanged)
