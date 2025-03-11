@@ -178,7 +178,7 @@ def test_hotswapping_max_metric_too_small(
 
     # Get the first batch
     with pytest.raises(ValueError, match="is greater than max_metric"):
-        batcher.first_batch()
+        batcher._first_batch()
 
 
 def test_hotswapping_auto_batcher(
@@ -197,7 +197,7 @@ def test_hotswapping_auto_batcher(
     )
 
     # Get the first batch
-    first_batch = batcher.first_batch()
+    first_batch = batcher._first_batch()
     assert isinstance(first_batch, BaseState)
 
     # Create a convergence tensor where the first state has converged
@@ -261,7 +261,7 @@ def test_hotswapping_auto_batcher_restore_order(
     )
 
     # Get the first batch
-    first_batch = batcher.first_batch()
+    first_batch = batcher._first_batch()
 
     # Simulate convergence of all states
     completed_states_list = []
@@ -328,7 +328,7 @@ def test_hotswapping_with_fire(
         )
         return batch_wise_max_force < 1e-1
 
-    state = batcher.first_batch()
+    state = batcher._first_batch()
 
     all_completed_states = []
     while True:

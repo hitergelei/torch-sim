@@ -310,19 +310,17 @@ class HotswappingAutoBatcher:
         self.max_metric = max_metric or None
         self.max_atoms_to_try = max_atoms_to_try
 
-        # self.total_metric = 0
         self.current_metrics = []
         self.current_idx = []
         self.iterator_idx = 0
 
-        # self.current_metric_idx = []
         self.completed_idx_og_order = []
 
     def _get_next_states(self) -> None:
         """Insert states from the iterator until max_metric is reached."""
         new_metrics = []
-        new_states = []
         new_idx = []
+        new_states = []
         for state in self.states_iterator:
             metric = calculate_scaling_metric(state, self.metric)
             if metric > self.max_metric:
@@ -338,14 +336,31 @@ class HotswappingAutoBatcher:
                 break
 
             new_metrics.append(metric)
-            new_states.append(state)
             new_idx.append(self.iterator_idx)
-            # self.total_metric += metric
-            # self.iterator_idx += 1
+            new_states.append(state)
+            self.iterator_idx += 1
 
-        return new_states, new_metrics, new_idx
+        self.current_metrics.extend(new_metrics)
+        self.current_idx.extend(new_idx)
 
-    def first_batch(self) -> BaseState:
+        return new_states
+
+    def _delete_old_states(self, completed_idx: torch.Tensor) -> None:
+        completed_idx = completed_idx.tolist()
+
+        # Sort in descending order to avoid index shifting problems
+        completed_idx.sort(reverse=True)
+
+        # update state tracking lists
+        for idx in completed_idx:
+            og_idx = self.current_idx.pop(idx)
+            self.current_metrics.pop(idx)
+            # self.total_metric -= metric
+            self.completed_idx_og_order.append(
+                og_idx + len(self.completed_idx_og_order)
+            )
+
+    def _first_batch(self) -> BaseState:
         """Get the first batch of states.
 
         Returns:
@@ -371,28 +386,22 @@ class HotswappingAutoBatcher:
             )
             self.max_metric *= 0.8
 
-        states, metrics, idx = self._get_next_states()
-        self.current_metrics += metrics
-        self.current_idx += idx
-        self.iterator_idx += len(idx)
+        states = self._get_next_states()
 
-        # update estimate of max metric if it was not set
-        # current_states = [state for state, _, _ in self.current_metric_idx]
-        # current_metrics = [metric for _, metric, _ in self.current_metric_idx]
         if not has_max_metric:
             self.max_metric = estimate_max_metric(
                 self.model,
                 [first_state] + states,
-                metrics,
+                self.current_metrics,
                 max_atoms=self.max_atoms_to_try,
             )
             print(f"Max metric calculated: {self.max_metric}")
-        return concatenate_states([first_state] + states)
+        return concatenate_states([first_state] + states), []
 
     def next_batch(
         self,
         updated_state: BaseState,
-        convergence_tensor: torch.Tensor,
+        convergence_tensor: torch.Tensor | None = None,
         *,
         return_indices: bool = False,
     ) -> (
@@ -413,38 +422,31 @@ class HotswappingAutoBatcher:
         # take the updated_concat_state and pop off
         # the states that have converged. with the pop_states function
 
-        assert len(convergence_tensor) == len(self.current_metrics)
+        if convergence_tensor is None:
+            if self.iterator_idx > 0:
+                raise ValueError(
+                    "A convergence tensor must be provided after the "
+                    "first batch has been run."
+                )
+            return self._first_batch()
+
+        # assert statements helpful for debugging, should be moved to validate fn
+        # the first two are most important
+        assert len(convergence_tensor) == updated_state.n_batches
         assert len(self.current_idx) == len(self.current_metrics)
         assert len(convergence_tensor.shape) == 1
-
-        # find indices of all convergence_tensor elements that are True
-        completed_idx_tensor = torch.where(convergence_tensor)[0]
-        completed_idx = completed_idx_tensor.tolist()
-
-        # Sort in descending order to avoid index shifting problems
-        completed_idx.sort(reverse=True)
-
-        # update state tracking lists
-        for idx in completed_idx:
-            og_idx = self.current_idx.pop(idx)
-            self.current_metrics.pop(idx)
-            # self.total_metric -= metric
-            self.completed_idx_og_order.append(
-                og_idx + len(self.completed_idx_og_order)
-            )
-
-        # pop completed states from updated state
         assert updated_state.n_batches > 0
+
+        completed_idx_tensor = torch.where(convergence_tensor)[0]
+
         remaining_state, completed_states = pop_states(
             updated_state, completed_idx_tensor
         )
 
-        # insert next states
-        next_states, metrics, idx = self._get_next_states()
-        self.current_metrics += metrics
-        self.current_idx += idx
-        self.iterator_idx += len(idx)
+        self._delete_old_states(completed_idx_tensor)
+        next_states = self._get_next_states()
 
+        # there are no states left to run, return the completed states
         if not self.current_idx:
             return (
                 (None, completed_states, [])
