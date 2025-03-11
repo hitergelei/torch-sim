@@ -10,7 +10,7 @@ from ase.build import bulk
 
 from torchsim.models.interface import ModelInterface
 from torchsim.runners import atoms_to_state
-from torchsim.state import BaseState, concatenate_states, slice_substate
+from torchsim.state import BaseState, concatenate_states, pop_states, split_state
 
 
 def measure_model_memory_forward(model: ModelInterface, state: BaseState) -> float:
@@ -71,12 +71,6 @@ def determine_max_batch_size(
             raise
 
     return fib[-2]
-
-
-def split_state(state: BaseState) -> list[BaseState]:
-    """Split a state into a list of states, each containing a single batch element."""
-    # TODO: make this more efficient
-    return [slice_substate(state, i) for i in range(state.n_batches)]
 
 
 def calculate_baseline_memory(model: ModelInterface) -> float:
@@ -237,6 +231,10 @@ class ChunkingAutoBatcher:
         Returns:
             The next batch of states, optionally with indices, or None if no more batches.
         """
+        # TODO: we need to refactor this to operate on the full states rather
+        # than the state slices, to be aligned with how the hotswapping batcher
+        # works.
+
         # TODO: need to think about how this intersects with reporting too
         # TODO: definitely a clever treatment to be done with iterators here
         if self.current_state_bin < len(self.state_bins):
@@ -269,6 +267,8 @@ class ChunkingAutoBatcher:
         """
         # TODO: need to assert at some point that the input states list
         # are all batch size 1
+
+        # TODO: should act on full states, not state slices
 
         # Flatten lists
         all_states = list(chain.from_iterable(state_bins))
@@ -310,13 +310,19 @@ class HotswappingAutoBatcher:
         self.max_metric = max_metric or None
         self.max_atoms_to_try = max_atoms_to_try
 
-        self.total_metric = 0
+        # self.total_metric = 0
+        self.current_metrics = []
+        self.current_idx = []
+        self.iterator_idx = 0
 
-        self.current_state_metric_idx = []
+        # self.current_metric_idx = []
         self.completed_idx_og_order = []
 
-    def _insert_next_states(self) -> None:
+    def _get_next_states(self) -> None:
         """Insert states from the iterator until max_metric is reached."""
+        new_metrics = []
+        new_states = []
+        new_idx = []
         for state in self.states_iterator:
             metric = calculate_scaling_metric(state, self.metric)
             if metric > self.max_metric:
@@ -325,25 +331,34 @@ class HotswappingAutoBatcher:
                     f"{self.max_metric}, please set a larger max_metric "
                     f"or run smaller systems metric."
                 )
-            if self.total_metric + metric > self.max_metric:
+            # new_metric += sum(new_metrics)
+            if sum(self.current_metrics) + sum(new_metrics) + metric > self.max_metric:
                 # put the state back in the iterator
                 self.states_iterator = chain([state], self.states_iterator)
                 break
-            self.total_metric += metric
 
-            # TODO: could be smarter about making these all together
-            self.current_state_metric_idx += [(state, metric, self.iterator_idx)]
-            self.iterator_idx += 1
+            new_metrics.append(metric)
+            new_states.append(state)
+            new_idx.append(self.iterator_idx)
+            # self.total_metric += metric
+            # self.iterator_idx += 1
 
-    def first_batch(self) -> list[BaseState]:
+        return new_states, new_metrics, new_idx
+
+    def first_batch(self) -> BaseState:
         """Get the first batch of states.
 
         Returns:
             The first batch of states.
         """
-        # we need to estimate the max metric for the first batch
+        # we need to sample a state and use it to estimate the max metric
+        # for the first batch
         first_state = next(self.states_iterator)
         first_metric = calculate_scaling_metric(first_state, self.metric)
+        self.current_metrics += [first_metric]
+        self.current_idx += [0]
+        self.iterator_idx += 1
+        # self.total_metric += first_metric
 
         # if max_metric is not set, estimate it
         has_max_metric = bool(self.max_metric)
@@ -356,87 +371,96 @@ class HotswappingAutoBatcher:
             )
             self.max_metric *= 0.8
 
-        self.total_metric = first_metric
-        self.current_state_metric_idx = [(first_state, first_metric, 0)]
-        self.iterator_idx = 1
-
-        self._insert_next_states()
+        states, metrics, idx = self._get_next_states()
+        self.current_metrics += metrics
+        self.current_idx += idx
+        self.iterator_idx += len(idx)
 
         # update estimate of max metric if it was not set
-        current_states = [state for state, _, _ in self.current_state_metric_idx]
-        current_metrics = [metric for _, metric, _ in self.current_state_metric_idx]
+        # current_states = [state for state, _, _ in self.current_metric_idx]
+        # current_metrics = [metric for _, metric, _ in self.current_metric_idx]
         if not has_max_metric:
             self.max_metric = estimate_max_metric(
                 self.model,
-                current_states,
-                current_metrics,
+                [first_state] + states,
+                metrics,
                 max_atoms=self.max_atoms_to_try,
             )
             print(f"Max metric calculated: {self.max_metric}")
-        return current_states
+        return concatenate_states([first_state] + states)
 
     def next_batch(
         self,
-        updated_concat_state: BaseState,
+        updated_state: BaseState,
         convergence_tensor: torch.Tensor,
         *,
         return_indices: bool = False,
     ) -> (
-        tuple[list[BaseState], list[BaseState]]
-        | tuple[list[BaseState], list[BaseState], list[int]]
+        tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]
     ):
         """Get the next batch of states based on convergence.
 
         Args:
+            updated_state: The updated state.
             convergence_tensor: Boolean tensor indicating which states have converged.
             return_indices: Whether to return indices along with the batch.
 
         Returns:
             The next batch of states.
         """
-        # TODO: this is bloated and we need to clean this up
-        # to make it more efficient
-        states_list = split_state(updated_concat_state)
-        new_current_state_metric_idx = []
-        for i, state in enumerate(states_list):
-            new_tup = (
-                state,
-                self.current_state_metric_idx[i][1],
-                self.current_state_metric_idx[i][2],
-            )
-            new_current_state_metric_idx.append(new_tup)
-        self.current_state_metric_idx = new_current_state_metric_idx
+        # TODO: this needs to be refactored to avoid so
+        # many split and concatenate operations, we should
+        # take the updated_concat_state and pop off
+        # the states that have converged. with the pop_states function
 
-        assert len(convergence_tensor) == len(self.current_state_metric_idx)
+        assert len(convergence_tensor) == len(self.current_metrics)
+        assert len(self.current_idx) == len(self.current_metrics)
         assert len(convergence_tensor.shape) == 1
 
         # find indices of all convergence_tensor elements that are True
-        completed_idx = list(torch.where(convergence_tensor)[0])
+        completed_idx_tensor = torch.where(convergence_tensor)[0]
+        completed_idx = completed_idx_tensor.tolist()
 
         # Sort in descending order to avoid index shifting problems
         completed_idx.sort(reverse=True)
 
-        # remove states at these indices
-        completed_states = []
+        # update state tracking lists
         for idx in completed_idx:
-            state, metric, _ = self.current_state_metric_idx.pop(idx)
-            completed_states.append(state)
-            self.total_metric -= metric
-            self.completed_idx_og_order.append(idx + len(self.completed_idx_og_order))
+            og_idx = self.current_idx.pop(idx)
+            self.current_metrics.pop(idx)
+            # self.total_metric -= metric
+            self.completed_idx_og_order.append(
+                og_idx + len(self.completed_idx_og_order)
+            )
+
+        # pop completed states from updated state
+        assert updated_state.n_batches > 0
+        remaining_state, completed_states = pop_states(
+            updated_state, completed_idx_tensor
+        )
 
         # insert next states
-        self._insert_next_states()
+        next_states, metrics, idx = self._get_next_states()
+        self.current_metrics += metrics
+        self.current_idx += idx
+        self.iterator_idx += len(idx)
 
-        if not self.current_state_metric_idx:
-            return [], []
+        if not self.current_idx:
+            return (
+                (None, completed_states, [])
+                if return_indices
+                else (None, completed_states)
+            )
 
-        current_states = [state for state, _, _ in self.current_state_metric_idx]
+        # concatenate remaining state with next states
+        if remaining_state.n_batches > 0:
+            next_states = [remaining_state] + next_states
+        next_batch = concatenate_states(next_states)
 
         if return_indices:
-            current_idx = [idx for _, _, idx in self.current_state_metric_idx]
-            return current_states, current_idx
+            return next_batch, completed_states, self.current_idx
 
-        return current_states, completed_states
+        return next_batch, completed_states
 
     def restore_original_order(
         self, completed_states: list[BaseState]
@@ -453,6 +477,8 @@ class HotswappingAutoBatcher:
             ValueError: If the number of completed states doesn't match
             the number of indices.
         """
+        # TODO: should act on full states, not state slices
+
         if len(completed_states) != len(self.completed_idx_og_order):
             raise ValueError(
                 f"Number of completed states ({len(completed_states)}) does not match "

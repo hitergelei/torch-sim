@@ -8,10 +8,10 @@ from torchsim.autobatching import (
     HotswappingAutoBatcher,
     calculate_scaling_metric,
     determine_max_batch_size,
-    split_state,
 )
 from torchsim.models.lennard_jones import LennardJonesModel
-from torchsim.state import BaseState
+from torchsim.optimizers import unit_cell_fire
+from torchsim.state import BaseState, split_state
 
 
 def test_calculate_scaling_metric(si_base_state: BaseState) -> None:
@@ -204,19 +204,24 @@ def test_hotswapping_auto_batcher(
     convergence = torch.tensor([True])
 
     # Get the next batch
-    next_batch, idx = batcher.next_batch(convergence, return_indices=True)
-    assert isinstance(next_batch, list)
+    next_batch, popped_batch, idx = batcher.next_batch(
+        first_batch, convergence, return_indices=True
+    )
+    assert isinstance(next_batch, BaseState)
+    assert isinstance(popped_batch, list)
+    assert isinstance(popped_batch[0], BaseState)
     assert idx == [1]
 
     # Check that the converged state was removed
-    assert len(batcher.current_state_metric_idx) == 1
+    assert len(batcher.current_metrics) == 1
+    assert len(batcher.current_idx) == 1
     assert len(batcher.completed_idx_og_order) == 1
 
     # Create a convergence tensor where the remaining state has converged
     convergence = torch.tensor([True])
 
     # Get the next batch, which should be None since all states have converged
-    final_batch = batcher.next_batch(convergence)
+    final_batch, popped_batch = batcher.next_batch(next_batch, convergence)
     assert final_batch is None
 
     # Check that all states are marked as completed
@@ -256,20 +261,21 @@ def test_hotswapping_auto_batcher_restore_order(
     )
 
     # Get the first batch
-    batcher.first_batch()
+    first_batch = batcher.first_batch()
 
     # Simulate convergence of all states
+    completed_states_list = []
     convergence = torch.tensor([True])
-    batcher.next_batch(convergence)
+    next_batch, completed_states = batcher.next_batch(first_batch, convergence)
+    completed_states_list.extend(completed_states)
 
     # sample batch a second time
-    batcher.next_batch(convergence)
-
-    # Create some completed states (doesn't matter what they are for this test)
-    completed_states = [si_base_state, fe_fcc_state]
+    # sample batch a second time
+    next_batch, completed_states = batcher.next_batch(next_batch, convergence)
+    completed_states_list.extend(completed_states)
 
     # Test restore_original_order
-    restored_states = batcher.restore_original_order(completed_states)
+    restored_states = batcher.restore_original_order(completed_states_list)
     assert len(restored_states) == 2
 
     # Check that the restored states match the original states in order
@@ -285,3 +291,62 @@ def test_hotswapping_auto_batcher_restore_order(
     #     ValueError, match="Number of completed states .* does not match"
     # ):
     #     batcher.restore_original_order([si_base_state])
+
+
+def test_hotswapping_with_fire(
+    si_base_state: BaseState, fe_fcc_state: BaseState, lj_calculator: LennardJonesModel
+) -> None:
+
+    fire_init, fire_update = unit_cell_fire(lj_calculator)
+
+    si_fire_state = fire_init(si_base_state)
+    fe_fire_state = fire_init(fe_fcc_state)
+
+    fire_states = [si_fire_state, fe_fire_state] * 5
+    fire_states = [state.clone() for state in fire_states]
+    for state in fire_states:
+        state.positions += torch.randn_like(state.positions) * 0.01
+
+    batcher = HotswappingAutoBatcher(
+        model=lj_calculator,
+        states=fire_states,
+        metric="n_atoms",
+        # max_metric=400_000,
+        max_metric=600,
+    )
+
+    def convergence_fn(state: BaseState) -> bool:
+        batch_wise_max_force = torch.zeros(
+            state.n_batches, device=state.device, dtype=torch.float64
+        )
+        max_forces = state.forces.norm(dim=1)
+        batch_wise_max_force = batch_wise_max_force.scatter_reduce(
+            dim=0,
+            index=state.batch,
+            src=max_forces,
+            reduce="amax",
+        )
+        return batch_wise_max_force < 1e-1
+
+    state = batcher.first_batch()
+
+    all_completed_states = []
+    while True:
+        print("Starting new batch.")
+        # run 10 steps, arbitrary number
+        for i in range(10):
+            state = fire_update(state)
+
+        convergence_tensor = convergence_fn(state)
+
+        state, completed_states = batcher.next_batch(state, convergence_tensor)
+
+        print("number of completed states", len(completed_states))
+
+        all_completed_states.extend(completed_states)
+
+        if not state:
+            print("No more batches to run.")
+            break
+
+    assert len(all_completed_states) == len(fire_states)
