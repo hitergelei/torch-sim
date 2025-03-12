@@ -337,3 +337,30 @@ def test_hotswapping_with_fire(
         convergence_tensor = convergence_fn(state)
 
     assert len(all_completed_states) == len(fire_states)
+
+def test_chunking_auto_batcher_with_fire(
+    si_base_state: BaseState, fe_fcc_state: BaseState, lj_calculator: LennardJonesModel
+) -> None:
+    fire_init, fire_update = unit_cell_fire(lj_calculator)
+
+    si_fire_state = fire_init(si_base_state)
+    fe_fire_state = fire_init(fe_fcc_state)
+
+    fire_states = [si_fire_state, fe_fire_state] * 5
+    fire_states = [state.clone() for state in fire_states]
+    for state in fire_states:
+        state.positions += torch.randn_like(state.positions) * 0.01
+
+    batcher = ChunkingAutoBatcher(
+        model=lj_calculator,
+        states=fire_states,
+        metric="n_atoms",
+        max_metric=400,
+    )
+
+    finished_states = []
+    for batch in batcher:
+        for _ in range(100):
+            batch = fire_update(batch)
+
+        finished_states.extend(split_state(batch))

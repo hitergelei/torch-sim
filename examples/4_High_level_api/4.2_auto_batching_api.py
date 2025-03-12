@@ -11,7 +11,11 @@ import torch
 from ase.build import bulk
 from mace.calculators.foundations_models import mace_mp
 
-from torchsim.autobatching import ChunkingAutoBatcher, HotswappingAutoBatcher, split_state
+from torchsim.autobatching import (
+    ChunkingAutoBatcher,
+    HotswappingAutoBatcher,
+    split_state,
+)
 from torchsim.integrators import nvt_langevin
 from torchsim.models.mace import MaceModel
 from torchsim.optimizers import unit_cell_fire
@@ -63,7 +67,6 @@ def convergence_fn(state: BaseState) -> bool:
     return batch_wise_max_force < 1e-1
 
 
-# %%
 batcher = HotswappingAutoBatcher(
     model=mace_model,
     states=fire_states,
@@ -109,7 +112,7 @@ fe_state = atoms_to_state(fe_atoms, device=device, dtype=torch.float64)
 si_nvt_state = nvt_init(si_state)
 fe_nvt_state = nvt_init(fe_state)
 
-nvt_states = [si_nvt_state, fe_nvt_state] * 100
+nvt_states = [si_nvt_state, fe_nvt_state] * 5
 nvt_states = [state.clone() for state in nvt_states]
 for state in nvt_states:
     state.positions += torch.randn_like(state.positions) * 0.01
@@ -124,11 +127,10 @@ batcher = ChunkingAutoBatcher(
 
 finished_states = []
 for batch in batcher:
-    full_state = concatenate_states(batch)
     for _ in range(100):
-        full_state = nvt_update(full_state)
+        batch = nvt_update(batch)
 
-    finished_states.extend(split_state(full_state))
+    finished_states.extend(split_state(batch))
 
 
 # %%
