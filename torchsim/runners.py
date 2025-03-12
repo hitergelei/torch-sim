@@ -127,7 +127,7 @@ def optimize(
     if convergence_fn is None:
 
         def convergence_fn(state: BaseState, last_energy: torch.Tensor) -> bool:
-            return last_energy - state.energy < 1e-4 * unit_system.energy
+            return last_energy - state.energy < 1e-6 * unit_system.energy
 
     # we partially evaluate the function to create a new function with
     # an optional second argument, this can be set to state later on
