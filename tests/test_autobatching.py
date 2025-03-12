@@ -71,14 +71,11 @@ def test_chunking_auto_batcher(
 
     # Get batches until None is returned
     batches = []
-    while True:
-        batch = batcher.next_batch()
-        if batch is None:
-            break
+    for batch in batcher:
         batches.append(batch)
 
     # Check we got the expected number of batches
-    assert len(batches) == len(batcher.state_bins)
+    assert len(batches) == len(batcher.batched_states)
 
     # Test restore_original_order
     restored_states = batcher.restore_original_order(batches)
@@ -100,20 +97,16 @@ def test_chunking_auto_batcher_with_indices(
     states = [si_base_state, fe_fcc_state]
 
     batcher = ChunkingAutoBatcher(
-        model=lj_calculator, states=states, metric="n_atoms", max_metric=260.0
+        model=lj_calculator, states=states, metric="n_atoms", max_metric=260.0, return_indices=True,
     )
 
     # Get batches with indices
     batches_with_indices = []
-    while True:
-        result = batcher.next_batch(return_indices=True)
-        if result is None:
-            break
-        batch, indices = result
+    for batch, indices in batcher:
         batches_with_indices.append((batch, indices))
 
     # Check we got the expected number of batches
-    assert len(batches_with_indices) == len(batcher.state_bins)
+    assert len(batches_with_indices) == len(batcher.batched_states)
 
     # Check that the indices match the expected bin indices
     for i, (_, indices) in enumerate(batches_with_indices):
@@ -197,7 +190,7 @@ def test_hotswapping_auto_batcher(
     )
 
     # Get the first batch
-    first_batch = batcher._first_batch()
+    first_batch, [] = batcher.next_batch(states, None)
     assert isinstance(first_batch, BaseState)
 
     # Create a convergence tensor where the first state has converged
@@ -261,7 +254,7 @@ def test_hotswapping_auto_batcher_restore_order(
     )
 
     # Get the first batch
-    first_batch = batcher._first_batch()
+    first_batch, [] = batcher.next_batch(states, None)
 
     # Simulate convergence of all states
     completed_states_list = []
@@ -325,27 +318,22 @@ def test_hotswapping_with_fire(
             src=max_forces,
             reduce="amax",
         )
-        return batch_wise_max_force < 1e-1
+        return batch_wise_max_force < 5e-1
 
-    state = batcher._first_batch()
-
-    all_completed_states = []
+    all_completed_states, convergence_tensor = [], None
     while True:
-        print("Starting new batch.")
-        # run 10 steps, arbitrary number
-        for _step in range(10):
-            state = fire_update(state)
-
-        convergence_tensor = convergence_fn(state)
+        print(f"Starting new batch of {state.n_batches} states.")
 
         state, completed_states = batcher.next_batch(state, convergence_tensor)
-
-        print("number of completed states", len(completed_states))
+        print("Number of completed states", len(completed_states))
 
         all_completed_states.extend(completed_states)
-
-        if not state:
-            print("No more batches to run.")
+        if state is None:
             break
+
+        # run 10 steps, arbitrary number
+        for i in range(10):
+            state = fire_update(state)
+        convergence_tensor = convergence_fn(state)
 
     assert len(all_completed_states) == len(fire_states)

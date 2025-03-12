@@ -176,6 +176,7 @@ class ChunkingAutoBatcher:
         metric: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
         max_metric: float | None = None,
         max_atoms_to_try: int = 1_000_000,
+        return_indices: bool = False,
     ) -> None:
         """Initialize the batcher.
 
@@ -201,6 +202,7 @@ class ChunkingAutoBatcher:
         else:
             self.max_metric = max_metric
 
+        self.return_indices = return_indices
         # verify that no systems are too large
         max_metric_value = max(self.metrics)
         max_metric_idx = self.metrics.index(max_metric_value)
@@ -250,7 +252,7 @@ class ChunkingAutoBatcher:
         return self
 
     def __next__(self):
-        next_batch = self.next_batch()
+        next_batch = self.next_batch(return_indices=self.return_indices)
         if next_batch is None:
             raise StopIteration
         return next_batch
