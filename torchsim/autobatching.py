@@ -82,7 +82,7 @@ def determine_max_batch_size(
 
 
 def calculate_memory_scaler(
-    state_slice: BaseState,
+    state: BaseState,
     memory_scales_with: Literal["n_atoms_x_density", "n_atoms"] = "n_atoms_x_density",
 ) -> float:
     """Calculate a metric that estimates memory requirements for a state.
@@ -91,7 +91,7 @@ def calculate_memory_scaler(
     with memory usage.
 
     Args:
-        state_slice: State to calculate metric for.
+        state: State to calculate metric for.
         memory_scales_with: Type of metric to use:
             - "n_atoms": Uses only atom count
             - "n_atoms_x_density": Uses atom count multiplied by number density
@@ -99,12 +99,14 @@ def calculate_memory_scaler(
     Returns:
         Calculated metric value.
     """
+    if state.n_batches > 1:
+        raise ValueError("State must be a single batch")
     if memory_scales_with == "n_atoms":
-        return state_slice.n_atoms
+        return state.n_atoms
     if memory_scales_with == "n_atoms_x_density":
-        volume = torch.abs(torch.linalg.det(state_slice.cell[0])) / 1000
-        number_density = state_slice.n_atoms / volume.item()
-        return state_slice.n_atoms * number_density
+        volume = torch.abs(torch.linalg.det(state.cell[0])) / 1000
+        number_density = state.n_atoms / volume.item()
+        return state.n_atoms * number_density
     raise ValueError(f"Invalid metric: {memory_scales_with}")
 
 

@@ -52,7 +52,7 @@ fire_init, fire_update = unit_cell_fire(mace_model)
 si_fire_state = fire_init(si_state)
 fe_fire_state = fire_init(fe_state)
 
-fire_states = [si_fire_state, fe_fire_state] * 20
+fire_states = [si_fire_state, fe_fire_state] * (2 if os.getenv("CI") else 20)
 fire_states = [state.clone() for state in fire_states]
 for state in fire_states:
     state.positions += torch.randn_like(state.positions) * 0.01
@@ -74,12 +74,12 @@ def convergence_fn(state: BaseState) -> bool:
     return batch_wise_max_force < 1e-1
 
 
+single_system_memory = calculate_memory_scaler(fire_states[0])
 batcher = HotSwappingAutoBatcher(
     model=mace_model,
     states=fire_states,
     memory_scales_with="n_atoms_x_density",
-    max_memory_scaler=400_000,
-    # max_metric=400_000,
+    max_memory_scaler=single_system_memory * 2.5 if os.getenv("CI") else None,
 )
 
 all_completed_states, convergence_tensor = [], None
@@ -111,17 +111,18 @@ fe_state = atoms_to_state(fe_atoms, device=device, dtype=torch.float64)
 si_nvt_state = nvt_init(si_state)
 fe_nvt_state = nvt_init(fe_state)
 
-nvt_states = [si_nvt_state, fe_nvt_state] * 5
+nvt_states = [si_nvt_state, fe_nvt_state] * (2 if os.getenv("CI") else 20)
 nvt_states = [state.clone() for state in nvt_states]
 for state in nvt_states:
     state.positions += torch.randn_like(state.positions) * 0.01
 
 
+single_system_memory = calculate_memory_scaler(fire_states[0])
 batcher = ChunkingAutoBatcher(
     model=mace_model,
     states=nvt_states,
     memory_scales_with="n_atoms_x_density",
-    max_memory_scaler=100_000,
+    max_memory_scaler=single_system_memory * 2.5 if os.getenv("CI") else None,
 )
 
 finished_states = []
