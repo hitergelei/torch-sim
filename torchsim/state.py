@@ -452,7 +452,8 @@ def concatenate_states(
     # Use the target device or default to the first state's device
     target_device = device or first_state.device
 
-    # Get property scopes from the first state to identify global/per-atom/per-batch properties
+    # Get property scopes from the first state to identify
+    # global/per-atom/per-batch properties
     first_scope = infer_property_scope(first_state)
     global_props = set(first_scope["global"])
     per_atom_props = set(first_scope["per_atom"])

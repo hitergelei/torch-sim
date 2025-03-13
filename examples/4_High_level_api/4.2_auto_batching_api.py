@@ -1,3 +1,5 @@
+"""Examples of using the auto-batching API."""
+
 # /// script
 # dependencies = [
 #     "mace-torch>=0.3.10",
@@ -5,22 +7,21 @@
 # ]
 # ///
 
+"""Run as a interactive script."""
+# ruff: noqa: E402
+
 
 # %%
 import torch
 from ase.build import bulk
 from mace.calculators.foundations_models import mace_mp
 
-from torchsim.autobatching import (
-    ChunkingAutoBatcher,
-    HotswappingAutoBatcher,
-    split_state,
-)
+from torchsim.autobatching import ChunkingAutoBatcher, HotswappingAutoBatcher, split_state
 from torchsim.integrators import nvt_langevin
 from torchsim.models.mace import MaceModel
 from torchsim.optimizers import unit_cell_fire
 from torchsim.runners import atoms_to_state
-from torchsim.state import BaseState, concatenate_states
+from torchsim.state import BaseState
 from torchsim.units import MetalUnits
 
 
@@ -56,6 +57,7 @@ len(fire_states)
 
 # %%
 def convergence_fn(state: BaseState) -> bool:
+    """Check if the system has converged."""
     batch_wise_max_force = torch.zeros(state.n_batches, device=state.device)
     max_forces = state.forces.norm(dim=1)
     batch_wise_max_force = batch_wise_max_force.scatter_reduce(

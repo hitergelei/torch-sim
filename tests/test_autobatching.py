@@ -70,9 +70,7 @@ def test_chunking_auto_batcher(
     assert batcher.memory_scalers[1] == fe_fcc_state.n_atoms
 
     # Get batches until None is returned
-    batches = []
-    for batch in batcher:
-        batches.append(batch)
+    batches = list(batcher)
 
     # Check we got the expected number of batches
     assert len(batches) == len(batcher.batched_states)
@@ -175,7 +173,7 @@ def test_hotswapping_max_metric_too_small(
 
     # Get the first batch
     with pytest.raises(ValueError, match="is greater than max_metric"):
-        batcher._first_batch()
+        batcher.next_batch()
 
 
 def test_hotswapping_auto_batcher(
@@ -339,7 +337,7 @@ def test_hotswapping_with_fire(
             break
 
         # run 10 steps, arbitrary number
-        for i in range(10):
+        for _ in range(10):
             state = fire_update(state)
         convergence_tensor = convergence_fn(state)
 
@@ -375,5 +373,5 @@ def test_chunking_auto_batcher_with_fire(
 
     restored_states = batcher.restore_original_order(finished_states)
     assert len(restored_states) == len(fire_states)
-    for restored, original in zip(restored_states, fire_states):
+    for restored, original in zip(restored_states, fire_states, strict=False):
         assert torch.all(restored.atomic_numbers == original.atomic_numbers)

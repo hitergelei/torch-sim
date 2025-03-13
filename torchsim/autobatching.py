@@ -6,10 +6,8 @@ from typing import Literal
 
 import binpacking
 import torch
-from ase.build import bulk
 
 from torchsim.models.interface import ModelInterface
-from torchsim.runners import atoms_to_state
 from torchsim.state import BaseState, concatenate_states, pop_states, split_state
 
 
@@ -81,7 +79,7 @@ def calculate_memory_scaler(
 
     Args:
         state_slice: The state to calculate metric for.
-        metric: The type of metric to calculate.
+        memory_scales_with: The type of metric to calculate.
 
     Returns:
         The calculated metric value.
@@ -134,9 +132,8 @@ class ChunkingAutoBatcher:
         self,
         states: list[BaseState] | BaseState,
         model: ModelInterface,
-        memory_scales_with: Literal[
-            "n_atoms", "n_atoms_x_density"
-        ] = "n_atoms_x_density",
+        *,
+        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
         return_indices: bool = False,
@@ -146,9 +143,10 @@ class ChunkingAutoBatcher:
         Args:
             model: The model to batch for.
             states: States to batch.
-            metric: Metric to use for batching.
-            max_metric: Maximum metric value per batch.
-                max_atoms_to_try: Max number of atoms to try when estimating max_metric.
+            memory_scales_with: Metric to use for batching.
+            max_memory_scaler: Maximum metric value per batch.
+            max_atoms_to_try: Max number of atoms to try when estimating max_metric.
+            return_indices: Whether to return indices along with the batch.
         """
         self.state_slices = (
             split_state(states) if isinstance(states, BaseState) else states
@@ -172,8 +170,9 @@ class ChunkingAutoBatcher:
         if max_metric_value > self.max_memory_scaler:
             raise ValueError(
                 f"Max metric of system with index {max_metric_idx} in states: "
-                f"{max(self.memory_scalers)} is greater than max_metric {self.max_memory_scaler}, "
-                f"please set a larger max_metric or run smaller systems metric."
+                f"{max(self.memory_scalers)} is greater than max_metric "
+                f"{self.max_memory_scaler}, please set a larger max_metric "
+                f"or run smaller systems metric."
             )
 
         self.index_to_scaler = dict(enumerate(self.memory_scalers))
@@ -207,18 +206,18 @@ class ChunkingAutoBatcher:
             return state
         return None
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[BaseState]:
+        """Iterate over the batches."""
         return self
 
-    def __next__(self):
+    def __next__(self) -> BaseState:
+        """Get the next batch."""
         next_batch = self.next_batch(return_indices=self.return_indices)
         if next_batch is None:
             raise StopIteration
         return next_batch
 
-    def restore_original_order(
-        self, batched_states: list[BaseState]
-    ) -> list[BaseState]:
+    def restore_original_order(self, batched_states: list[BaseState]) -> list[BaseState]:
         """Take the state bins and reorder them into a list.
 
         Args:
@@ -251,9 +250,7 @@ class HotswappingAutoBatcher:
         self,
         states: list[BaseState] | Iterator[BaseState] | BaseState,
         model: ModelInterface,
-        memory_scales_with: Literal[
-            "n_atoms", "n_atoms_x_density"
-        ] = "n_atoms_x_density",
+        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
     ) -> None:
@@ -262,8 +259,8 @@ class HotswappingAutoBatcher:
         Args:
             model: The model to batch for.
             states: States to batch.
-            metric: Metric to use for batching.
-            max_metric: Maximum metric value per batch.
+            memory_scales_with: Metric to use for batching.
+            max_memory_scaler: Maximum metric value per batch.
             max_atoms_to_try: Maximum number of atoms to try when estimating max_metric.
         """
         if isinstance(states, BaseState):
@@ -369,9 +366,7 @@ class HotswappingAutoBatcher:
         convergence_tensor: torch.Tensor | None = None,
         *,
         return_indices: bool = False,
-    ) -> (
-        tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]
-    ):
+    ) -> tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]:
         """Get the next batch of states based on convergence.
 
         Args:
