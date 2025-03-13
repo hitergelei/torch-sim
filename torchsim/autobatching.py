@@ -12,14 +12,17 @@ from torchsim.state import BaseState, concatenate_states, pop_states, split_stat
 
 
 def measure_model_memory_forward(state: BaseState, model: ModelInterface) -> float:
-    """Measure peak GPU memory usage during model forward pass.
+    """Measure peak GPU memory usage during a model's forward pass.
+
+    Clears GPU cache, runs a forward pass with the provided state, and measures
+    the maximum memory allocated during execution.
 
     Args:
-        state: The input state to pass to the model.
-        model: The model to measure memory usage for.
+        state: Input state to pass to the model.
+        model: Model to measure memory usage for.
 
     Returns:
-        Peak memory usage in GB.
+        Peak memory usage in gigabytes.
     """
     # Clear GPU memory
 
@@ -44,10 +47,13 @@ def determine_max_batch_size(
 ) -> int:
     """Determine maximum batch size that fits in GPU memory.
 
+    Uses a Fibonacci sequence to efficiently search for the largest number of
+    batches that can be processed without running out of GPU memory.
+
     Args:
-        model: The model to test with.
-        state: The base state to replicate.
-        max_atoms: Maximum number of atoms to try.
+        state: Base state to replicate for testing.
+        model: Model to test with.
+        max_atoms: Upper limit on number of atoms to try (for safety).
 
     Returns:
         Maximum number of batches that fit in GPU memory.
@@ -75,14 +81,19 @@ def calculate_memory_scaler(
     state_slice: BaseState,
     memory_scales_with: Literal["n_atoms_x_density", "n_atoms"] = "n_atoms_x_density",
 ) -> float:
-    """Calculate scaling metric for a state.
+    """Calculate a metric that estimates memory requirements for a state.
+
+    Provides different scaling metrics based on system properties that correlate
+    with memory usage.
 
     Args:
-        state_slice: The state to calculate metric for.
-        memory_scales_with: The type of metric to calculate.
+        state_slice: State to calculate metric for.
+        memory_scales_with: Type of metric to use:
+            - "n_atoms": Uses only atom count
+            - "n_atoms_x_density": Uses atom count multiplied by number density
 
     Returns:
-        The calculated metric value.
+        Calculated metric value.
     """
     if memory_scales_with == "n_atoms":
         return state_slice.n_atoms
@@ -99,16 +110,19 @@ def estimate_max_memory_scaler(
     metric_values: list[float],
     max_atoms: int = 500_000,
 ) -> float:
-    """Estimate maximum metric value that fits in GPU memory.
+    """Estimate maximum memory scaling metric that fits in GPU memory.
+
+    Tests both minimum and maximum metric states to determine a safe upper bound
+    for the memory scaling metric.
 
     Args:
-        model: The model to test with.
+        model: Model to test with.
         state_list: List of states to test.
         metric_values: Corresponding metric values for each state.
         max_atoms: Maximum number of atoms to try.
 
     Returns:
-        Maximum metric value that fits in GPU memory.
+        Maximum safe metric value that fits in GPU memory.
     """
     metric_values = torch.tensor(metric_values)
 
@@ -126,27 +140,39 @@ def estimate_max_memory_scaler(
 
 
 class ChunkingAutoBatcher:
-    """Batcher that chunks states into bins of similar computational cost."""
+    """Batcher that groups states into bins of similar computational cost.
+
+    Divides a collection of states into batches that can be processed efficiently
+    without exceeding GPU memory. States are grouped based on a memory scaling
+    metric to maximize GPU utilization.
+    """
 
     def __init__(
         self,
         states: list[BaseState] | BaseState,
         model: ModelInterface,
         *,
-        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
+        memory_scales_with: Literal[
+            "n_atoms", "n_atoms_x_density"
+        ] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
         return_indices: bool = False,
     ) -> None:
-        """Initialize the batcher.
+        """Initialize the chunking auto-batcher.
 
         Args:
-            model: The model to batch for.
-            states: States to batch.
-            memory_scales_with: Metric to use for batching.
-            max_memory_scaler: Maximum metric value per batch.
-            max_atoms_to_try: Max number of atoms to try when estimating max_metric.
-            return_indices: Whether to return indices along with the batch.
+            states: Collection of states to batch (either a list or a single state
+                that will be split).
+            model: Model to batch for, used to estimate memory requirements.
+            memory_scales_with: Metric to use for estimating memory requirements:
+                - "n_atoms": Uses only atom count
+                - "n_atoms_x_density": Uses atom count multiplied by number density
+            max_memory_scaler: Maximum metric value allowed per batch. If None,
+                will be automatically estimated.
+            max_atoms_to_try: Maximum number of atoms to try when estimating
+                max_memory_scaler.
+            return_indices: Whether to return original indices along with batches.
         """
         self.state_slices = (
             split_state(states) if isinstance(states, BaseState) else states
@@ -189,11 +215,17 @@ class ChunkingAutoBatcher:
     ) -> BaseState | tuple[list[BaseState], list[int]] | None:
         """Get the next batch of states.
 
+        Returns batches sequentially until all states have been processed.
+
         Args:
-            return_indices: Whether to return indices along with the batch.
+            return_indices: Whether to return original indices along with the batch.
+                Overrides the value set during initialization.
 
         Returns:
-            The next batch of states, optionally with indices, or None if no more batches.
+            - If return_indices is False: The next batch of states,
+                or None if no more batches.
+            - If return_indices is True: Tuple of (batch, indices),
+                or None if no more batches.
         """
         # TODO: need to think about how this intersects with reporting too
         # TODO: definitely a clever treatment to be done with iterators here
@@ -207,24 +239,48 @@ class ChunkingAutoBatcher:
         return None
 
     def __iter__(self) -> Iterator[BaseState]:
-        """Iterate over the batches."""
+        """Return self as an iterator.
+
+        Allows using the batcher in a for loop.
+
+        Returns:
+            Self as an iterator.
+        """
         return self
 
     def __next__(self) -> BaseState:
-        """Get the next batch."""
+        """Get the next batch for iteration.
+
+        Implements the iterator protocol to allow using the batcher in a for loop.
+
+        Returns:
+            The next batch of states.
+
+        Raises:
+            StopIteration: When there are no more batches.
+        """
         next_batch = self.next_batch(return_indices=self.return_indices)
         if next_batch is None:
             raise StopIteration
         return next_batch
 
-    def restore_original_order(self, batched_states: list[BaseState]) -> list[BaseState]:
-        """Take the state bins and reorder them into a list.
+    def restore_original_order(
+        self, batched_states: list[BaseState]
+    ) -> list[BaseState]:
+        """Reorder processed states back to their original sequence.
+
+        Takes states that were processed in batches and restores them to the
+        original order they were provided in.
 
         Args:
             batched_states: List of state batches to reorder.
 
         Returns:
             States in their original order.
+
+        Raises:
+            ValueError: If the number of states doesn't match
+            the number of original indices.
         """
         state_bins = [split_state(state) for state in batched_states]
 
@@ -244,24 +300,36 @@ class ChunkingAutoBatcher:
 
 
 class HotswappingAutoBatcher:
-    """Batcher that dynamically swaps states in and out based on convergence."""
+    """Batcher that dynamically swaps states based on convergence.
+
+    Optimizes GPU utilization by removing converged states from the batch and
+    adding new states to process. This approach is ideal for iterative processes
+    where different states may converge at different rates.
+    """
 
     def __init__(
         self,
         states: list[BaseState] | Iterator[BaseState] | BaseState,
         model: ModelInterface,
-        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
+        memory_scales_with: Literal[
+            "n_atoms", "n_atoms_x_density"
+        ] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
     ) -> None:
-        """Initialize the batcher.
+        """Initialize the hotswapping auto-batcher.
 
         Args:
-            model: The model to batch for.
-            states: States to batch.
-            memory_scales_with: Metric to use for batching.
-            max_memory_scaler: Maximum metric value per batch.
-            max_atoms_to_try: Maximum number of atoms to try when estimating max_metric.
+            states: Collection of states to process (list, iterator, or single state
+                that will be split).
+            model: Model to batch for, used to estimate memory requirements.
+            memory_scales_with: Metric to use for estimating memory requirements:
+                - "n_atoms": Uses only atom count
+                - "n_atoms_x_density": Uses atom count multiplied by number density
+            max_memory_scaler: Maximum metric value allowed per batch. If None,
+                will be automatically estimated.
+            max_atoms_to_try: Maximum number of atoms to try when estimating
+                max_memory_scaler.
         """
         if isinstance(states, BaseState):
             states = split_state(states)
@@ -281,7 +349,14 @@ class HotswappingAutoBatcher:
         self.completed_idx_og_order = []
 
     def _get_next_states(self) -> None:
-        """Insert states from the iterator until max_metric is reached."""
+        """Add states from the iterator until max_memory_scaler is reached.
+
+        Pulls states from the iterator and adds them to the current batch until
+        adding another would exceed the maximum memory scaling metric.
+
+        Returns:
+            List of new states added to the batch.
+        """
         new_metrics = []
         new_idx = []
         new_states = []
@@ -313,6 +388,14 @@ class HotswappingAutoBatcher:
         return new_states
 
     def _delete_old_states(self, completed_idx: list[int]) -> None:
+        """Remove completed states from tracking lists.
+
+        Updates internal tracking of states and their metrics when states are
+        completed and removed from processing.
+
+        Args:
+            completed_idx: Indices of completed states to remove.
+        """
         # Sort in descending order to avoid index shifting problems
         completed_idx.sort(reverse=True)
 
@@ -323,10 +406,13 @@ class HotswappingAutoBatcher:
             self.completed_idx_og_order.append(og_idx)
 
     def _first_batch(self) -> BaseState:
-        """Get the first batch of states.
+        """Create and return the first batch of states.
+
+        Initializes the batcher by estimating memory requirements if needed
+        and creating the first batch of states to process.
 
         Returns:
-            The first batch of states.
+            Tuple of (first batch, empty list of completed states).
         """
         # we need to sample a state and use it to estimate the max metric
         # for the first batch
@@ -362,27 +448,36 @@ class HotswappingAutoBatcher:
 
     def next_batch(
         self,
-        updated_state: BaseState,
-        convergence_tensor: torch.Tensor | None = None,
+        updated_state: BaseState | None,
+        convergence_tensor: torch.Tensor | None,
         *,
         return_indices: bool = False,
-    ) -> tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]:
+    ) -> (
+        tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]
+    ):
         """Get the next batch of states based on convergence.
 
+        Removes converged states from the batch, adds new states if possible,
+        and returns both the updated batch and the completed states.
+
         Args:
-            updated_state: The updated state.
+            updated_state: Current state after processing.
             convergence_tensor: Boolean tensor indicating which states have converged.
-            return_indices: Whether to return indices along with the batch.
+                If None, assumes this is the first call.
+            return_indices: Whether to return original indices along with the batch.
 
         Returns:
-            The next batch of states.
+            - If return_indices is False: Tuple of (next_batch, completed_states)
+            - If return_indices is True: Tuple of (next_batch, completed_states, indices)
+
+            When no states remain to process, next_batch will be None.
         """
         # TODO: this needs to be refactored to avoid so
         # many split and concatenate operations, we should
         # take the updated_concat_state and pop off
         # the states that have converged. with the pop_states function
 
-        if convergence_tensor is None:
+        if convergence_tensor is None or updated_state is None:
             if self.iterator_idx > 0:
                 raise ValueError(
                     "A convergence tensor must be provided after the "
@@ -426,7 +521,10 @@ class HotswappingAutoBatcher:
     def restore_original_order(
         self, completed_states: list[BaseState]
     ) -> list[BaseState]:
-        """Take the list of completed states and reconstruct the original order.
+        """Reorder completed states back to their original sequence.
+
+        Takes states that were completed in arbitrary order and restores them
+        to the original order they were provided in.
 
         Args:
             completed_states: List of completed states to reorder.
@@ -435,8 +533,8 @@ class HotswappingAutoBatcher:
             States in their original order.
 
         Raises:
-            ValueError: If the number of completed states doesn't match
-            the number of indices.
+            ValueError: If the number of completed states doesn't match the
+                number of completed indices.
         """
         # TODO: should act on full states, not state slices
 

@@ -173,7 +173,7 @@ def test_hotswapping_max_metric_too_small(
 
     # Get the first batch
     with pytest.raises(ValueError, match="is greater than max_metric"):
-        batcher.next_batch()
+        batcher.next_batch(None, None)
 
 
 def test_hotswapping_auto_batcher(
@@ -237,7 +237,7 @@ def test_determine_max_batch_size_fibonacci(
     )
 
     # Test with a small max_atoms value to limit the sequence
-    max_size = determine_max_batch_size(lj_calculator, si_base_state, max_atoms=10)
+    max_size = determine_max_batch_size(si_base_state, lj_calculator, max_atoms=10)
 
     # The Fibonacci sequence up to 10 is [1, 2, 3, 5, 8, 13]
     # Since we're not triggering OOM errors with our mock, it should
