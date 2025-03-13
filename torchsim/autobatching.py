@@ -152,9 +152,7 @@ class ChunkingAutoBatcher:
         states: list[BaseState] | BaseState,
         model: ModelInterface,
         *,
-        memory_scales_with: Literal[
-            "n_atoms", "n_atoms_x_density"
-        ] = "n_atoms_x_density",
+        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
         return_indices: bool = False,
@@ -264,9 +262,7 @@ class ChunkingAutoBatcher:
             raise StopIteration
         return next_batch
 
-    def restore_original_order(
-        self, batched_states: list[BaseState]
-    ) -> list[BaseState]:
+    def restore_original_order(self, batched_states: list[BaseState]) -> list[BaseState]:
         """Reorder processed states back to their original sequence.
 
         Takes states that were processed in batches and restores them to the
@@ -311,9 +307,7 @@ class HotswappingAutoBatcher:
         self,
         states: list[BaseState] | Iterator[BaseState] | BaseState,
         model: ModelInterface,
-        memory_scales_with: Literal[
-            "n_atoms", "n_atoms_x_density"
-        ] = "n_atoms_x_density",
+        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
     ) -> None:
@@ -452,9 +446,7 @@ class HotswappingAutoBatcher:
         convergence_tensor: torch.Tensor | None,
         *,
         return_indices: bool = False,
-    ) -> (
-        tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]
-    ):
+    ) -> tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]:
         """Get the next batch of states based on convergence.
 
         Removes converged states from the batch, adds new states if possible,
