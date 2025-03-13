@@ -10,7 +10,10 @@
 """Run as a interactive script."""
 # ruff: noqa: E402
 
+
 # %%
+import os
+
 import torch
 from ase.build import bulk
 from mace.calculators.foundations_models import mace_mp
@@ -18,6 +21,7 @@ from mace.calculators.foundations_models import mace_mp
 from torchsim.autobatching import (
     ChunkingAutoBatcher,
     HotSwappingAutoBatcher,
+    calculate_memory_scaler,
     split_state,
 )
 from torchsim.integrators import nvt_langevin
@@ -26,6 +30,7 @@ from torchsim.optimizers import unit_cell_fire
 from torchsim.runners import atoms_to_state
 from torchsim.state import BaseState
 from torchsim.units import MetalUnits
+
 
 if not torch.cuda.is_available():
     raise SystemExit(0)
