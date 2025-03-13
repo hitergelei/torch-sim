@@ -6,7 +6,7 @@ import torch
 from torchsim.autobatching import (
     ChunkingAutoBatcher,
     HotswappingAutoBatcher,
-    calculate_scaling_metric,
+    calculate_memory_scaler,
     determine_max_batch_size,
 )
 from torchsim.models.lennard_jones import LennardJonesModel
@@ -17,18 +17,18 @@ from torchsim.state import BaseState, split_state
 def test_calculate_scaling_metric(si_base_state: BaseState) -> None:
     """Test calculation of scaling metrics for a state."""
     # Test n_atoms metric
-    n_atoms_metric = calculate_scaling_metric(si_base_state, "n_atoms")
+    n_atoms_metric = calculate_memory_scaler(si_base_state, "n_atoms")
     assert n_atoms_metric == si_base_state.n_atoms
 
     # Test n_atoms_x_density metric
-    density_metric = calculate_scaling_metric(si_base_state, "n_atoms_x_density")
+    density_metric = calculate_memory_scaler(si_base_state, "n_atoms_x_density")
     volume = torch.abs(torch.linalg.det(si_base_state.cell[0])) / 1000
     expected = si_base_state.n_atoms * (si_base_state.n_atoms / volume.item())
     assert pytest.approx(density_metric, rel=1e-5) == expected
 
     # Test invalid metric
     with pytest.raises(ValueError, match="Invalid metric"):
-        calculate_scaling_metric(si_base_state, "invalid_metric")
+        calculate_memory_scaler(si_base_state, "invalid_metric")
 
 
 def test_split_state(si_double_base_state: BaseState) -> None:

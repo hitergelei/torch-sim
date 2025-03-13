@@ -13,12 +13,12 @@ from torchsim.runners import atoms_to_state
 from torchsim.state import BaseState, concatenate_states, pop_states, split_state
 
 
-def measure_model_memory_forward(model: ModelInterface, state: BaseState) -> float:
+def measure_model_memory_forward(state: BaseState, model: ModelInterface) -> float:
     """Measure peak GPU memory usage during model forward pass.
 
     Args:
-        model: The model to measure memory usage for.
         state: The input state to pass to the model.
+        model: The model to measure memory usage for.
 
     Returns:
         Peak memory usage in GB.
@@ -42,7 +42,7 @@ def measure_model_memory_forward(model: ModelInterface, state: BaseState) -> flo
 
 
 def determine_max_batch_size(
-    model: ModelInterface, state: BaseState, max_atoms: int = 20000
+    state: BaseState, model: ModelInterface, max_atoms: int = 500_000
 ) -> int:
     """Determine maximum batch size that fits in GPU memory.
 
@@ -64,7 +64,7 @@ def determine_max_batch_size(
         concat_state = concatenate_states([state] * n_batches)
 
         try:
-            measure_model_memory_forward(model, concat_state)
+            measure_model_memory_forward(concat_state, model)
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
                 return fib[i - 2]
@@ -73,48 +73,9 @@ def determine_max_batch_size(
     return fib[-2]
 
 
-def calculate_baseline_memory(model: ModelInterface) -> float:
-    """Calculate baseline memory usage of the model.
-
-    Args:
-        model: The model to measure baseline memory for.
-
-    Returns:
-        Baseline memory usage in GB.
-    """
-    # Create baseline atoms with different sizes
-    baseline_atoms = [bulk("Al", "fcc").repeat((i, 1, 1)) for i in range(1, 9, 2)]
-    baseline_states = [
-        atoms_to_state(atoms, model.device, model.dtype) for atoms in baseline_atoms
-    ]
-
-    # Measure memory usage for each state
-    memory_list = [
-        measure_model_memory_forward(model, state) for state in baseline_states
-    ]
-
-    # Calculate number of atoms in each baseline state
-    n_atoms_list = [state.n_atoms for state in baseline_states]
-
-    # Convert to tensors
-    n_atoms_tensor = torch.tensor(n_atoms_list, dtype=torch.float)
-    memory_tensor = torch.tensor(memory_list, dtype=torch.float)
-
-    # Prepare design matrix (with column of ones for intercept)
-    X = torch.stack([torch.ones_like(n_atoms_tensor), n_atoms_tensor], dim=1)
-
-    # Solve normal equations
-    beta = torch.linalg.lstsq(X, memory_tensor.unsqueeze(1)).solution.squeeze()
-
-    # Extract intercept (b) and slope (m)
-    intercept, _ = beta[0].item(), beta[1].item()
-
-    return intercept
-
-
-def calculate_scaling_metric(
+def calculate_memory_scaler(
     state_slice: BaseState,
-    metric: Literal["n_atoms_x_density", "n_atoms"] = "n_atoms_x_density",
+    memory_scales_with: Literal["n_atoms_x_density", "n_atoms"] = "n_atoms_x_density",
 ) -> float:
     """Calculate scaling metric for a state.
 
@@ -125,20 +86,20 @@ def calculate_scaling_metric(
     Returns:
         The calculated metric value.
     """
-    if metric == "n_atoms":
+    if memory_scales_with == "n_atoms":
         return state_slice.n_atoms
-    if metric == "n_atoms_x_density":
+    if memory_scales_with == "n_atoms_x_density":
         volume = torch.abs(torch.linalg.det(state_slice.cell[0])) / 1000
         number_density = state_slice.n_atoms / volume.item()
         return state_slice.n_atoms * number_density
-    raise ValueError(f"Invalid metric: {metric}")
+    raise ValueError(f"Invalid metric: {memory_scales_with}")
 
 
-def estimate_max_metric(
+def estimate_max_memory_scaler(
     model: ModelInterface,
     state_list: list[BaseState],
     metric_values: list[float],
-    max_atoms: int = 20000,
+    max_atoms: int = 500_000,
 ) -> float:
     """Estimate maximum metric value that fits in GPU memory.
 
@@ -160,8 +121,8 @@ def estimate_max_metric(
     min_state = state_list[metric_values.argmin()]
     max_state = state_list[metric_values.argmax()]
 
-    min_state_max_batches = determine_max_batch_size(model, min_state, max_atoms)
-    max_state_max_batches = determine_max_batch_size(model, max_state, max_atoms)
+    min_state_max_batches = determine_max_batch_size(min_state, model, max_atoms)
+    max_state_max_batches = determine_max_batch_size(max_state, model, max_atoms)
 
     return min(min_state_max_batches * min_metric, max_state_max_batches * max_metric)
 
@@ -177,7 +138,7 @@ class ChunkingAutoBatcher:
             "n_atoms", "n_atoms_x_density"
         ] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
-        max_atoms_to_try: int = 1_000_000,
+        max_atoms_to_try: int = 500_000,
         return_indices: bool = False,
     ) -> None:
         """Initialize the batcher.
@@ -193,11 +154,11 @@ class ChunkingAutoBatcher:
             split_state(states) if isinstance(states, BaseState) else states
         )
         self.memory_scalers = [
-            calculate_scaling_metric(state_slice, memory_scales_with)
+            calculate_memory_scaler(state_slice, memory_scales_with)
             for state_slice in self.state_slices
         ]
         if not max_memory_scaler:
-            self.max_memory_scaler = estimate_max_metric(
+            self.max_memory_scaler = estimate_max_memory_scaler(
                 model, self.state_slices, self.memory_scalers, max_atoms_to_try
             )
             print(f"Max metric calculated: {self.max_memory_scaler}")
@@ -294,7 +255,7 @@ class HotswappingAutoBatcher:
             "n_atoms", "n_atoms_x_density"
         ] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
-        max_atoms_to_try: int = 1_000_000,
+        max_atoms_to_try: int = 500_000,
     ) -> None:
         """Initialize the batcher.
 
@@ -328,7 +289,7 @@ class HotswappingAutoBatcher:
         new_idx = []
         new_states = []
         for state in self.states_iterator:
-            metric = calculate_scaling_metric(state, self.memory_scales_with)
+            metric = calculate_memory_scaler(state, self.memory_scales_with)
             if metric > self.max_memory_scaler:
                 raise ValueError(
                     f"State metric {metric} is greater than max_metric "
@@ -373,7 +334,7 @@ class HotswappingAutoBatcher:
         # we need to sample a state and use it to estimate the max metric
         # for the first batch
         first_state = next(self.states_iterator)
-        first_metric = calculate_scaling_metric(first_state, self.memory_scales_with)
+        first_metric = calculate_memory_scaler(first_state, self.memory_scales_with)
         self.current_scalers += [first_metric]
         self.current_idx += [0]
         self.iterator_idx += 1
@@ -382,7 +343,7 @@ class HotswappingAutoBatcher:
         # if max_metric is not set, estimate it
         has_max_metric = bool(self.max_memory_scaler)
         if not has_max_metric:
-            self.max_memory_scaler = estimate_max_metric(
+            self.max_memory_scaler = estimate_max_memory_scaler(
                 self.model,
                 [first_state],
                 [first_metric],
@@ -393,7 +354,7 @@ class HotswappingAutoBatcher:
         states = self._get_next_states()
 
         if not has_max_metric:
-            self.max_memory_scaler = estimate_max_metric(
+            self.max_memory_scaler = estimate_max_memory_scaler(
                 self.model,
                 [first_state, *states],
                 self.current_scalers,
