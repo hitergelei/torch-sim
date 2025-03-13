@@ -124,6 +124,12 @@ def estimate_max_memory_scaler(
     Returns:
         Maximum safe metric value that fits in GPU memory.
     """
+    # assert model device is not cpu
+    if model.device.type == "cpu":
+        raise ValueError(
+            "Using the CPU to estimate max memory scaler is not supported."
+        )
+
     metric_values = torch.tensor(metric_values)
 
     # select one state with the min n_atoms
@@ -152,7 +158,9 @@ class ChunkingAutoBatcher:
         states: list[BaseState] | BaseState,
         model: ModelInterface,
         *,
-        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
+        memory_scales_with: Literal[
+            "n_atoms", "n_atoms_x_density"
+        ] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
         return_indices: bool = False,
@@ -262,7 +270,9 @@ class ChunkingAutoBatcher:
             raise StopIteration
         return next_batch
 
-    def restore_original_order(self, batched_states: list[BaseState]) -> list[BaseState]:
+    def restore_original_order(
+        self, batched_states: list[BaseState]
+    ) -> list[BaseState]:
         """Reorder processed states back to their original sequence.
 
         Takes states that were processed in batches and restores them to the
@@ -295,7 +305,7 @@ class ChunkingAutoBatcher:
         return [state for _, state in sorted(indexed_states, key=lambda x: x[0])]
 
 
-class HotswappingAutoBatcher:
+class HotSwappingAutoBatcher:
     """Batcher that dynamically swaps states based on convergence.
 
     Optimizes GPU utilization by removing converged states from the batch and
@@ -307,7 +317,9 @@ class HotswappingAutoBatcher:
         self,
         states: list[BaseState] | Iterator[BaseState] | BaseState,
         model: ModelInterface,
-        memory_scales_with: Literal["n_atoms", "n_atoms_x_density"] = "n_atoms_x_density",
+        memory_scales_with: Literal[
+            "n_atoms", "n_atoms_x_density"
+        ] = "n_atoms_x_density",
         max_memory_scaler: float | None = None,
         max_atoms_to_try: int = 500_000,
     ) -> None:
@@ -446,7 +458,9 @@ class HotswappingAutoBatcher:
         convergence_tensor: torch.Tensor | None,
         *,
         return_indices: bool = False,
-    ) -> tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]:
+    ) -> (
+        tuple[BaseState, list[BaseState]] | tuple[BaseState, list[BaseState], list[int]]
+    ):
         """Get the next batch of states based on convergence.
 
         Removes converged states from the batch, adds new states if possible,

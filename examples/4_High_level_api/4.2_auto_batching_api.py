@@ -9,14 +9,19 @@
 
 """Run as a interactive script."""
 # ruff: noqa: E402
-
+if not torch.cuda.is_available():
+    raise SystemExit(0)
 
 # %%
 import torch
 from ase.build import bulk
 from mace.calculators.foundations_models import mace_mp
 
-from torchsim.autobatching import ChunkingAutoBatcher, HotswappingAutoBatcher, split_state
+from torchsim.autobatching import (
+    ChunkingAutoBatcher,
+    HotSwappingAutoBatcher,
+    split_state,
+)
 from torchsim.integrators import nvt_langevin
 from torchsim.models.mace import MaceModel
 from torchsim.optimizers import unit_cell_fire
@@ -28,7 +33,7 @@ from torchsim.units import MetalUnits
 si_atoms = bulk("Si", "fcc", a=5.43, cubic=True).repeat((3, 3, 3))
 fe_atoms = bulk("Fe", "fcc", a=5.43, cubic=True).repeat((3, 3, 3))
 
-device = torch.device("cpu")
+device = torch.device("cuda")
 
 mace = mace_mp(model="small", return_raw_model=True)
 mace_model = MaceModel(
@@ -69,7 +74,7 @@ def convergence_fn(state: BaseState) -> bool:
     return batch_wise_max_force < 1e-1
 
 
-batcher = HotswappingAutoBatcher(
+batcher = HotSwappingAutoBatcher(
     model=mace_model,
     states=fire_states,
     memory_scales_with="n_atoms_x_density",

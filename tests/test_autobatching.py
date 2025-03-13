@@ -5,7 +5,7 @@ import torch
 
 from torchsim.autobatching import (
     ChunkingAutoBatcher,
-    HotswappingAutoBatcher,
+    HotSwappingAutoBatcher,
     calculate_memory_scaler,
     determine_max_batch_size,
 )
@@ -164,7 +164,7 @@ def test_hotswapping_max_metric_too_small(
     states = [si_base_state, fe_fcc_state]
 
     # Initialize the batcher with a fixed max_metric
-    batcher = HotswappingAutoBatcher(
+    batcher = HotSwappingAutoBatcher(
         states=states,
         model=lj_calculator,
         memory_scales_with="n_atoms",
@@ -184,7 +184,7 @@ def test_hotswapping_auto_batcher(
     states = [si_base_state, fe_fcc_state]
 
     # Initialize the batcher with a fixed max_metric
-    batcher = HotswappingAutoBatcher(
+    batcher = HotSwappingAutoBatcher(
         states=states,
         model=lj_calculator,
         memory_scales_with="n_atoms",
@@ -251,7 +251,7 @@ def test_hotswapping_auto_batcher_restore_order(
     """Test HotswappingAutoBatcher's restore_original_order method."""
     states = [si_base_state, fe_fcc_state]
 
-    batcher = HotswappingAutoBatcher(
+    batcher = HotSwappingAutoBatcher(
         states=states,
         model=lj_calculator,
         memory_scales_with="n_atoms",
@@ -304,7 +304,7 @@ def test_hotswapping_with_fire(
     for state in fire_states:
         state.positions += torch.randn_like(state.positions) * 0.01
 
-    batcher = HotswappingAutoBatcher(
+    batcher = HotSwappingAutoBatcher(
         states=fire_states,
         model=lj_calculator,
         memory_scales_with="n_atoms",
