@@ -58,16 +58,16 @@ def test_chunking_auto_batcher(
 
     # Initialize the batcher with a fixed max_metric to avoid GPU memory testing
     batcher = ChunkingAutoBatcher(
-        model=lj_calculator,
         states=states,
-        metric="n_atoms",
-        max_metric=260.0,  # Set a small value to force multiple batches
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
+        max_memory_scaler=260.0,  # Set a small value to force multiple batches
     )
 
     # Check that the batcher correctly identified the metrics
-    assert len(batcher.metrics) == 2
-    assert batcher.metrics[0] == si_base_state.n_atoms
-    assert batcher.metrics[1] == fe_fcc_state.n_atoms
+    assert len(batcher.memory_scalers) == 2
+    assert batcher.memory_scalers[0] == si_base_state.n_atoms
+    assert batcher.memory_scalers[1] == fe_fcc_state.n_atoms
 
     # Get batches until None is returned
     batches = []
@@ -97,7 +97,11 @@ def test_chunking_auto_batcher_with_indices(
     states = [si_base_state, fe_fcc_state]
 
     batcher = ChunkingAutoBatcher(
-        model=lj_calculator, states=states, metric="n_atoms", max_metric=260.0, return_indices=True,
+        states=states,
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
+        max_memory_scaler=260.0,
+        return_indices=True,
     )
 
     # Get batches with indices
@@ -122,10 +126,10 @@ def test_chunking_auto_batcher_restore_order_with_split_states(
 
     # Initialize the batcher with a fixed max_metric to avoid GPU memory testing
     batcher = ChunkingAutoBatcher(
-        model=lj_calculator,
         states=states,
-        metric="n_atoms",
-        max_metric=260.0,  # Set a small value to force multiple batches
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
+        max_memory_scaler=260.0,  # Set a small value to force multiple batches
     )
 
     # Get batches until None is returned
@@ -163,10 +167,10 @@ def test_hotswapping_max_metric_too_small(
 
     # Initialize the batcher with a fixed max_metric
     batcher = HotswappingAutoBatcher(
-        model=lj_calculator,
         states=states,
-        metric="n_atoms",
-        max_metric=1.0,  # Set a small value to force multiple batches
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
+        max_memory_scaler=1.0,  # Set a small value to force multiple batches
     )
 
     # Get the first batch
@@ -183,10 +187,10 @@ def test_hotswapping_auto_batcher(
 
     # Initialize the batcher with a fixed max_metric
     batcher = HotswappingAutoBatcher(
-        model=lj_calculator,
         states=states,
-        metric="n_atoms",
-        max_metric=260,  # Set a small value to force multiple batches
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
+        max_memory_scaler=260,  # Set a small value to force multiple batches
     )
 
     # Get the first batch
@@ -206,7 +210,7 @@ def test_hotswapping_auto_batcher(
     assert idx == [1]
 
     # Check that the converged state was removed
-    assert len(batcher.current_metrics) == 1
+    assert len(batcher.current_scalers) == 1
     assert len(batcher.current_idx) == 1
     assert len(batcher.completed_idx_og_order) == 1
 
@@ -250,7 +254,10 @@ def test_hotswapping_auto_batcher_restore_order(
     states = [si_base_state, fe_fcc_state]
 
     batcher = HotswappingAutoBatcher(
-        model=lj_calculator, states=states, metric="n_atoms", max_metric=260.0
+        states=states,
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
+        max_memory_scaler=260.0,
     )
 
     # Get the first batch
@@ -300,11 +307,11 @@ def test_hotswapping_with_fire(
         state.positions += torch.randn_like(state.positions) * 0.01
 
     batcher = HotswappingAutoBatcher(
-        model=lj_calculator,
         states=fire_states,
-        metric="n_atoms",
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
         # max_metric=400_000,
-        max_metric=600,
+        max_memory_scaler=600,
     )
 
     def convergence_fn(state: BaseState) -> bool:
@@ -338,6 +345,7 @@ def test_hotswapping_with_fire(
 
     assert len(all_completed_states) == len(fire_states)
 
+
 def test_chunking_auto_batcher_with_fire(
     si_base_state: BaseState, fe_fcc_state: BaseState, lj_calculator: LennardJonesModel
 ) -> None:
@@ -352,15 +360,20 @@ def test_chunking_auto_batcher_with_fire(
         state.positions += torch.randn_like(state.positions) * 0.01
 
     batcher = ChunkingAutoBatcher(
-        model=lj_calculator,
         states=fire_states,
-        metric="n_atoms",
-        max_metric=400,
+        model=lj_calculator,
+        memory_scales_with="n_atoms",
+        max_memory_scaler=400,
     )
 
     finished_states = []
     for batch in batcher:
-        for _ in range(100):
+        for _ in range(5):
             batch = fire_update(batch)
 
         finished_states.extend(split_state(batch))
+
+    restored_states = batcher.restore_original_order(finished_states)
+    assert len(restored_states) == len(fire_states)
+    for restored, original in zip(restored_states, fire_states):
+        assert torch.all(restored.atomic_numbers == original.atomic_numbers)

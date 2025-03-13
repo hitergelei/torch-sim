@@ -70,8 +70,8 @@ def convergence_fn(state: BaseState) -> bool:
 batcher = HotswappingAutoBatcher(
     model=mace_model,
     states=fire_states,
-    metric="n_atoms_x_density",
-    max_metric=400_000,
+    memory_scales_with="n_atoms_x_density",
+    max_memory_scaler=400_000,
     # max_metric=400_000,
 )
 
@@ -121,8 +121,8 @@ for state in nvt_states:
 batcher = ChunkingAutoBatcher(
     model=mace_model,
     states=nvt_states,
-    metric="n_atoms_x_density",
-    max_metric=100_000,
+    memory_scales_with="n_atoms_x_density",
+    max_memory_scaler=100_000,
 )
 
 finished_states = []
