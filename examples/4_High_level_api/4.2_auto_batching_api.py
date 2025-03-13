@@ -60,7 +60,7 @@ for state in fire_states:
 len(fire_states)
 
 
-# %%
+# %% run hot swapping autobatcher
 def convergence_fn(state: BaseState) -> bool:
     """Check if the system has converged."""
     batch_wise_max_force = torch.zeros(state.n_batches, device=state.device)
@@ -99,15 +99,7 @@ while True:
     convergence_tensor = convergence_fn(state)
 
 
-# %%
-batcher.restore_original_order(all_completed_states)
-
-
-# %%
-sorted(batcher.completed_idx_og_order)
-
-
-# %%
+# %% run chunking autobatcher
 nvt_init, nvt_update = nvt_langevin(
     model=mace_model, dt=0.001, kT=300 * MetalUnits.temperature
 )
@@ -138,15 +130,3 @@ for batch in batcher:
         batch = nvt_update(batch)
 
     finished_states.extend(split_state(batch))
-
-
-# %%
-len(finished_states)
-
-
-# %%
-t = torch.tensor([1, 1, 3, 3, 3, 3])
-torch.bincount(t)
-_, counts = torch.unique_consecutive(t, return_counts=True)
-
-print(f"{counts=}")
