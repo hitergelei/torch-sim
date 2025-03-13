@@ -24,9 +24,13 @@ def measure_model_memory_forward(state: BaseState, model: ModelInterface) -> flo
     Returns:
         Peak memory usage in gigabytes.
     """
-    # Clear GPU memory
+    # assert model device is not cpu
+    if model.device.type == "cpu":
+        raise ValueError(
+            "Memory estimation does not make sense on CPU and is unsupported."
+        )
 
-    # gc.collect()
+    # Clear GPU memory
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
@@ -124,11 +128,6 @@ def estimate_max_memory_scaler(
     Returns:
         Maximum safe metric value that fits in GPU memory.
     """
-    # assert model device is not cpu
-    if model.device.type == "cpu":
-        raise ValueError(
-            "Using the CPU to estimate max memory scaler is not supported."
-        )
 
     metric_values = torch.tensor(metric_values)
 

@@ -9,8 +9,6 @@
 
 """Run as a interactive script."""
 # ruff: noqa: E402
-if not torch.cuda.is_available():
-    raise SystemExit(0)
 
 # %%
 import torch
@@ -29,6 +27,8 @@ from torchsim.runners import atoms_to_state
 from torchsim.state import BaseState
 from torchsim.units import MetalUnits
 
+if not torch.cuda.is_available():
+    raise SystemExit(0)
 
 si_atoms = bulk("Si", "fcc", a=5.43, cubic=True).repeat((3, 3, 3))
 fe_atoms = bulk("Fe", "fcc", a=5.43, cubic=True).repeat((3, 3, 3))
