@@ -10,7 +10,7 @@ from torch_sim.unbatched.models.morse import morse_pair, morse_pair_force
 
 
 class MorseModel(torch.nn.Module, ModelInterface):
-    """Calculator for Morse potential.
+    """Calculator for Morse potential. change
 
     This model implements the Morse potential energy and force calculator.
     It supports customizable interaction parameters for different particle pairs.
