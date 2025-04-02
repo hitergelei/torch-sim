@@ -337,16 +337,11 @@ class MatterSimModel(torch.nn.Module, ModelInterface):
             )
 
             data = {
-                "num_nodes": torch.tensor(len(atomic_number)),
-                "num_edges": torch.tensor(len(edge_idx[0])),
                 "num_atoms": torch.tensor(len(atomic_number)),
                 "num_bonds": torch.tensor(len(edge_idx[0])),
                 "atom_attr": atomic_number.unsqueeze(-1),  # [n_atoms, 1] expected
                 "atom_pos": pos,
-                "edge_length": distances,
-                "edge_vector": edge_vec,
                 "edge_index": edge_idx,
-                "pbc": pbc,
                 "pbc_offsets": shifts_idx,
                 "cell": cell.unsqueeze(0),
                 "three_body_indices": triple_bond_index,

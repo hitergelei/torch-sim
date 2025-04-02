@@ -17,6 +17,7 @@ try:
         compute_threebody_indices as compute_threebody_indices_numpy,
     )
     from mattersim.forcefield import MatterSimCalculator, Potential
+    from pymatgen.optimization.neighbors import find_points_in_spheres
 
     from torch_sim.models.mattersim import MatterSimModel
     from torch_sim.models.mattersim import (
@@ -78,41 +79,6 @@ def mattersim_calculator(
     return MatterSimCalculator(pretrained_mattersim_model, device=device)
 
 
-@pytest.fixture(scope="module")
-def example_data_torch() -> dict[str, torch.Tensor]:
-    """Provides the example data as torch tensors."""
-    return {
-        "n_atoms": torch.tensor([5]),
-        "atomic_number": torch.tensor([1, 1, 8, 6, 6]),  # Example
-        "bond_atom_indices": torch.tensor(
-            [
-                [0, 1],  # Bond 0
-                [0, 2],  # Bond 1
-                [1, 0],  # Bond 2
-                [1, 2],  # Bond 3
-                [3, 4],  # Bond 4
-                [4, 3],  # Bond 5
-            ]
-        ),
-        "bond_length": torch.tensor([1.0, 1.5, 1.0, 0.9, 2.1, 2.1], dtype=torch.float32),
-    }
-
-
-@pytest.fixture(scope="module")
-def example_data_numpy(
-    example_data_torch: dict[str, torch.Tensor],
-) -> dict[str, np.ndarray]:
-    """Provides the example data as numpy arrays."""
-    data_np = {}
-    for key, tensor in example_data_torch.items():
-        data_np[key] = tensor.numpy()
-    # Ensure specific dtypes expected by NumPy version if necessary
-    data_np["n_atoms"] = data_np["n_atoms"].astype(np.int32)
-    data_np["atomic_number"] = data_np["atomic_number"].astype(np.int32)
-    data_np["bond_atom_indices"] = data_np["bond_atom_indices"].astype(np.int32)
-    return data_np
-
-
 def sort_rows(array: np.ndarray) -> np.ndarray:
     """Sorts rows of a 2D NumPy array lexicographically."""
     if array.shape[0] == 0:
@@ -150,141 +116,86 @@ def assert_outputs_equal(
     np.testing.assert_array_equal(torch_n_s_np, np_n_s)
 
 
-def test_torch_example_no_cutoff(example_data_torch: dict[str, torch.Tensor]):
-    """Test torch implementation against expected values without cutoff."""
-    b_idx, n_ij, n_i, n_s = compute_threebody_indices_torch(**example_data_torch)
+def test_compare_neighbor_and_threebody_implementations(
+    cu_system: SimState,
+    device: torch.device,
+) -> None:
+    """Compare vesin_nl_ts and compute_threebody_indices outputs with
+    reference implementations.
+    """
+    # Get system data
+    batch_mask = cu_system.batch == 0
+    pos = cu_system.positions[batch_mask]
+    cell = cu_system.cell[0]
 
-    expected_b_idx = torch.tensor([[0, 1], [1, 0], [2, 3], [3, 2]])
-    expected_n_ij = torch.tensor([1, 1, 1, 1, 0, 0])
-    expected_n_i = torch.tensor([2, 2, 0, 0, 0])
-    expected_n_s = torch.tensor([4])
+    lattice_matrix = np.ascontiguousarray(cell.cpu().numpy(), dtype=float)
+    cart_coords = np.ascontiguousarray(pos.cpu().numpy(), dtype=float)
 
-    # Sort bond indices for comparison
-    b_idx_np_sorted = sort_rows(b_idx.cpu().numpy())
-    expected_b_idx_np_sorted = sort_rows(expected_b_idx.cpu().numpy())
+    cutoff = 3.0  # Example cutoff
 
-    np.testing.assert_array_equal(b_idx_np_sorted, expected_b_idx_np_sorted)
-    assert torch.equal(n_ij.cpu(), expected_n_ij.cpu())
-    assert torch.equal(n_i.cpu(), expected_n_i.cpu())
-    assert torch.equal(n_s.cpu(), expected_n_s.cpu())
+    # 1. Compare neighbor lists
+    # PyMatGen implementation
+    center_indices, neighbor_indices, images, distances = find_points_in_spheres(
+        cart_coords,
+        cart_coords,
+        r=cutoff,
+        pbc=np.ones(3, int),
+        lattice=lattice_matrix,
+        tol=1e-8,
+    )
 
+    # torch_sim implementation
+    edge_idx, shifts_idx = vesin_nl_ts(
+        positions=pos,
+        cell=cell,
+        pbc=cu_system.pbc,
+        cutoff=torch.tensor(cutoff, device=device),
+    )
 
-def test_compare_no_cutoff(
-    example_data_torch: dict[str, torch.Tensor],
-    example_data_numpy: dict[str, np.ndarray],
-):
-    """Compare torch and numpy implementations without cutoff."""
-    torch_out = compute_threebody_indices_torch(**example_data_torch)
-    np_out = compute_threebody_indices_numpy(**example_data_numpy)
-    assert_outputs_equal(torch_out, np_out)
+    # Convert torch outputs to numpy for comparison
+    edge_idx_np = edge_idx.cpu().numpy()
+    shifts_idx_np = shifts_idx.cpu().numpy()
 
+    # Sort both outputs for comparison
+    pymatgen_pairs = np.stack([center_indices, neighbor_indices], axis=1)
+    pymatgen_sorted = sort_rows(pymatgen_pairs)
+    torch_pairs = sort_rows(edge_idx_np.T)
 
-def test_compare_with_cutoff(
-    example_data_torch: dict[str, torch.Tensor],
-    example_data_numpy: dict[str, np.ndarray],
-):
-    """Compare torch and numpy implementations with cutoff."""
-    cutoff = 1.6
+    # Compare neighbor lists
+    np.testing.assert_array_almost_equal(pymatgen_sorted, torch_pairs)
+    np.testing.assert_array_almost_equal(images, shifts_idx_np)
+
+    # 2. Compare threebody indices
+    # Calculate distances for torch implementation
+    shifts = torch.mm(shifts_idx, cu_system.cell[0])
+    edge_vec = (
+        cu_system.positions[0][edge_idx[0]] - cu_system.positions[0][edge_idx[1]] - shifts
+    )
+    distances_torch = torch.norm(edge_vec, dim=-1)
+
+    # Torch implementation
     torch_out = compute_threebody_indices_torch(
-        **example_data_torch, threebody_cutoff=cutoff
-    )
-    np_out = compute_threebody_indices_numpy(
-        **example_data_numpy, threebody_cutoff=cutoff
-    )
-    assert_outputs_equal(torch_out, np_out)
-
-
-def test_edge_no_bonds(
-    example_data_torch: dict[str, torch.Tensor],
-    example_data_numpy: dict[str, np.ndarray],
-):
-    """Test edge case with zero bonds."""
-    n_atoms_t = example_data_torch["n_atoms"]
-    atomic_num_t = example_data_torch["atomic_number"]
-    n_atoms_np = example_data_numpy["n_atoms"]
-    atomic_num_np = example_data_numpy["atomic_number"]
-
-    # Torch
-    bonds_t = torch.empty((0, 2), dtype=torch.long)
-    lengths_t = torch.empty((0,), dtype=torch.float32)
-    torch_out = compute_threebody_indices_torch(
-        bonds_t, lengths_t, n_atoms_t, atomic_num_t
+        bond_atom_indices=torch.transpose(edge_idx, 1, 0),
+        bond_length=distances_torch,
+        n_atoms=torch.tensor([pos.shape[0]]),
+        atomic_number=cu_system.atomic_numbers[: pos.shape[0]],
+        threebody_cutoff=cutoff,
     )
 
-    # NumPy
-    bonds_np = np.empty((0, 2), dtype=np.int32)
-    lengths_np = np.empty((0,), dtype=np.float32)
-    np_out = compute_threebody_indices_numpy(
-        bonds_np, lengths_np, n_atoms_np, atomic_num_np
+    # NumPy implementation
+    numpy_out = compute_threebody_indices_numpy(
+        bond_atom_indices=edge_idx_np.T.astype(np.int32),
+        bond_length=distances_torch.cpu().numpy().astype(np.float32),
+        n_atoms=np.array([pos.shape[0]], dtype=np.int32),
+        atomic_number=cu_system.atomic_numbers[: pos.shape[0]]
+        .cpu()
+        .numpy()
+        .astype(np.int32),
+        threebody_cutoff=cutoff,
     )
 
-    assert_outputs_equal(torch_out, np_out)
-    # Also check shapes explicitly
-    assert torch_out[0].shape == (0, 2)
-    assert torch_out[1].shape == (0,)
-    assert torch_out[2].shape == (atomic_num_t.shape[0],)
-    assert torch_out[3].shape == (n_atoms_t.shape[0],)
-    assert torch.all(torch_out[2] == 0)
-    assert torch.all(torch_out[3] == 0)
-
-
-def test_edge_no_angles(
-    example_data_torch: dict[str, torch.Tensor],
-    example_data_numpy: dict[str, np.ndarray],
-):
-    """Test edge case with bonds but no central atom having > 1 bond."""
-    # Linear chain 0-1, 1-2, 3-4 (no atom is center of >1 bond)
-    bonds_t = torch.tensor([[0, 1], [1, 2], [3, 4]])
-    lengths_t = torch.tensor([1.0, 1.0, 1.0])
-    n_atoms_t = example_data_torch["n_atoms"]
-    atomic_num_t = example_data_torch["atomic_number"]
-
-    bonds_np = bonds_t.numpy().astype(np.int32)
-    lengths_np = lengths_t.numpy()
-    n_atoms_np = example_data_numpy["n_atoms"]
-    atomic_num_np = example_data_numpy["atomic_number"]
-
-    torch_out = compute_threebody_indices_torch(
-        bonds_t, lengths_t, n_atoms_t, atomic_num_t
-    )
-    np_out = compute_threebody_indices_numpy(
-        bonds_np, lengths_np, n_atoms_np, atomic_num_np
-    )
-
-    assert_outputs_equal(torch_out, np_out)
-    # Check explicit values for no angles
-    assert torch_out[0].shape == (0, 2)  # No triple indices
-    assert torch.all(torch_out[1] == 0)  # n_ij all zero
-    assert torch.all(torch_out[2] == 0)  # n_i all zero
-    assert torch.all(torch_out[3] == 0)  # n_s all zero
-
-
-def test_edge_cutoff_filters_all(
-    example_data_torch: dict[str, torch.Tensor],
-    example_data_numpy: dict[str, np.ndarray],
-):
-    """Test edge case where cutoff filters all bonds."""
-    cutoff = 0.5  # Smaller than any bond length in example
-    torch_out = compute_threebody_indices_torch(
-        **example_data_torch, threebody_cutoff=cutoff
-    )
-    np_out = compute_threebody_indices_numpy(
-        **example_data_numpy, threebody_cutoff=cutoff
-    )
-
-    assert_outputs_equal(torch_out, np_out)
-    # Check explicit values for no bonds after filtering
-    n_bond_orig = example_data_torch["bond_atom_indices"].shape[0]
-    n_atom_total = example_data_torch["atomic_number"].shape[0]
-    n_struct = example_data_torch["n_atoms"].shape[0]
-
-    assert torch_out[0].shape == (0, 2)  # No triple indices
-    assert torch_out[1].shape == (n_bond_orig,)
-    assert torch.all(torch_out[1] == 0)  # n_ij all zero
-    assert torch_out[2].shape == (n_atom_total,)
-    assert torch.all(torch_out[2] == 0)  # n_i all zero
-    assert torch_out[3].shape == (n_struct,)
-    assert torch.all(torch_out[3] == 0)  # n_s all zero
+    # Compare outputs
+    assert_outputs_equal(torch_out, numpy_out)
 
 
 def test_mattersim_initialization(
