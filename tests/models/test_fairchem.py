@@ -2,7 +2,7 @@ import pytest
 import torch
 from ase.build import bulk
 
-from torch_sim.io import atoms_to_state
+from torch_sim.io import atoms_to_state, state_to_atoms
 from torch_sim.models.interface import validate_model_outputs
 from torch_sim.state import SimState
 
@@ -51,15 +51,15 @@ def ocp_calculator(model_path: str) -> OCPCalculator:
 def test_fairchem_ocp_consistency(
     fairchem_model: FairChemModel,
     ocp_calculator: OCPCalculator,
+    si_system: SimState,
     device: torch.device,
 ) -> None:
     # Set up ASE calculator
-    si_dc = bulk("Si", "diamond", a=5.43)
+    si_dc = state_to_atoms(si_system)[0]
     si_dc.calc = ocp_calculator
 
-    si_state = atoms_to_state([si_dc], device, torch.float32)
     # Get FairChem results
-    fairchem_results = fairchem_model(si_state)
+    fairchem_results = fairchem_model(si_system)
 
     # Get OCP results
     ocp_forces = torch.tensor(

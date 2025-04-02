@@ -164,9 +164,6 @@ class SevenNetModel(torch.nn.Module, ModelInterface):
         if state.device != self._device:
             state = state.to(self._device)
 
-        # TODO: is this clone necessary?
-        state = state.clone()
-
         data_list = []
         for b in range(state.batch.max().item() + 1):
             batch_mask = state.batch == b

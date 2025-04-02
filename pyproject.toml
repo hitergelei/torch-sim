@@ -124,6 +124,7 @@ docstring-code-format = true
 
 [tool.codespell]
 check-filenames = true
+ignore-words-list = ["convertor"]
 
 [tool.pytest]
 addopts = ["--cov-report=term-missing", "--cov=torch_sim", "-v"]

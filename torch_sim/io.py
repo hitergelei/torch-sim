@@ -236,7 +236,7 @@ def atoms_to_state(
     try:
         from ase import Atoms
     except ImportError as err:
-        raise ImportError("ASE is required for state_to_atoms conversion") from err
+        raise ImportError("ASE is required for atoms_to_state conversion") from err
 
     atoms_list = [atoms] if isinstance(atoms, Atoms) else atoms
 

@@ -327,6 +327,7 @@ class OrbModel(torch.nn.Module, ModelInterface):
             model = torch.load(model, map_location=self._device)
 
         self.model = model.to(self._device)
+        self.model.eval()
         if self._dtype is not None:
             self.model = self.model.to(dtype=self._dtype)
 
@@ -344,7 +345,6 @@ class OrbModel(torch.nn.Module, ModelInterface):
 
         # Set up implemented properties
         self.implemented_properties = self.model.properties
-        self._compute_stress = compute_stress
 
         # Add forces and stress to implemented properties if conservative model
         if self.conservative:

@@ -2,8 +2,9 @@ import pytest
 import torch
 from ase.build import bulk
 
-from torch_sim.io import atoms_to_state
+from torch_sim.io import atoms_to_state, state_to_atoms
 from torch_sim.models.interface import validate_model_outputs
+from torch_sim.neighbors import vesin_nl_ts
 from torch_sim.state import SimState
 
 
@@ -78,6 +79,7 @@ def test_sevennet_initialization(
     # Check that properties were set correctly
     assert model.modal == "omat24"
     assert model._device == device  # noqa: SLF001
+    assert model.neighbor_list_fn == vesin_nl_ts
 
 
 def test_sevennet_calculator_consistency(
@@ -87,12 +89,12 @@ def test_sevennet_calculator_consistency(
     device: torch.device,
 ) -> None:
     """Test consistency between SevenNetModel and SevenNetCalculator."""
+    # Set up ASE calculator
+    cu_fcc = state_to_atoms(cu_system)[0]
+    cu_fcc.calc = sevenn_calculator
+
     # Get SevenNetModel results
     sevenn_results = sevenn_model(cu_system)
-
-    # Set up ASE calculator
-    cu_fcc = bulk("Cu", "fcc", a=3.58, cubic=True)
-    cu_fcc.calc = sevenn_calculator
 
     # Get calculator results
     calc_energy = cu_fcc.get_potential_energy()
