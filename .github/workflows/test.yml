@@ -172,6 +172,7 @@ jobs:
       - name: Run Tests with Coverage
         run: |
           pytest --cov=torchsim --cov-report=xml tests/models/test_fairchem.py
+          cp coverage.xml ../coverage.xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
