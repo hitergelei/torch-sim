@@ -81,7 +81,7 @@ jobs:
         run: uv pip install mace-torch --system
 
       - name: Run Tests with Coverage
-        run: pytest --cov=torch_sim --cov-report=xml tests/test_mace.py
+        run: pytest --cov=torch_sim --cov-report=xml tests/models/test_mace.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -211,7 +211,7 @@ jobs:
 
       - name: Run Tests with Coverage
         run: |
-          pytest --cov=torchsim --cov-report=xml tests/test_orb.py
+          pytest --cov=torchsim --cov-report=xml tests/models/test_orb.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
