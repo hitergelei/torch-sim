@@ -249,7 +249,7 @@ class OrbModel(torch.nn.Module, ModelInterface):
         model (Union[GraphRegressor, ConservativeForcefieldRegressor]): The ORB model
         system_config (SystemConfig): Configuration for the atomic system
         conservative (bool): Whether to use conservative forces/stresses calculation
-        implemented_properties (list): List of properties the model can compute
+        implemented_properties (list): Properties the model can compute
         _dtype (torch.dtype): Data type used for computation
         _device (torch.device): Device where computation is performed
         _edge_method (EdgeCreationMethod): Method for creating edges in the graph
@@ -274,7 +274,7 @@ class OrbModel(torch.nn.Module, ModelInterface):
         edge_method: EdgeCreationMethod | None = None,
         half_supercell: bool | None = None,
         device: torch.device | str | None = None,
-        dtype: torch.dtype | None = None,
+        dtype: torch.dtype = torch.float32,
     ) -> None:
         """Initialize the OrbModel with specified configuration.
 
@@ -309,7 +309,7 @@ class OrbModel(torch.nn.Module, ModelInterface):
         if isinstance(self._device, str):
             self._device = torch.device(self._device)
 
-        self._dtype = dtype or torch.float32
+        self._dtype = dtype
         self._memory_scales_with = "n_atoms"
         self._compute_stress = compute_stress
         self._compute_forces = compute_forces
@@ -382,7 +382,7 @@ class OrbModel(torch.nn.Module, ModelInterface):
             state = state.to(self._device)
 
         half_supercell = (
-            state.positions.shape[0] >= 5_000
+            torch.max(state.volume) > 1000
             if self._half_supercell is None
             else self._half_supercell
         )
