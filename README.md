@@ -90,7 +90,7 @@ print(relaxed_state.energy)
 ### PyPI Installation
 
 ```sh
-pip install torch-sim
+pip install torch-sim-atomistic
 ```
 
 ### Installing from source
@@ -101,6 +101,19 @@ cd torch-sim
 pip install .
 ```
 
+## Speedup
+
+TorchSim achieves up to 100x speedup compared to ASE with popular MLIPs.
+
+![Speedup comparison](docs/_static/speedup_plot.png)
+
+This figure compares the time per atom of ASE and torch_sim. Time per atom is defined
+as the number of atoms / total time. While ASE can only run a single system of n_atoms
+(on the x axis), torch_sim can run as many systems as will fit in memory. On an H100,
+the max atoms that could fit in memory was 8000 for gemnet, 10000 for MACE, and 2500
+for SevenNet. This metric gives a clean comparison of how different models make use of
+the available hardware.
+
 ## Examples
 
 To understand how `torch-sim` works, start with the [comprehensive tutorials](https://radical-ai.github.io/torch-sim/user/overview.html) in the documentation.
@@ -109,7 +122,7 @@ Even more usage examples can be found in the [`examples/`](examples/readme.md) f
 
 ## Core Modules
 
-The `torch-sim` structured is summarized in the [API reference](https://radical-ai.github.io/torch-sim/reference/index.html) documentation.
+`torch-sim`'s structure is summarized in the [API reference](https://radical-ai.github.io/torch-sim/reference/index.html) documentation.
 
 ## License
 
