@@ -38,83 +38,83 @@ if TYPE_CHECKING:
     from mattersim.forcefield import Potential
 
 
-def _compute_threebody_indices(  # noqa: C901
+def _mattersim_vesin_nl_ts(
+    positions: torch.Tensor,
+    cell: torch.Tensor,
+    pbc: torch.Tensor,
+    cutoff: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Wrapper for MatterSim vesin_nl_ts function to add self-edges."""
+    edge_idx, shifts_idx = vesin_nl_ts(
+        positions=positions,
+        cell=cell,
+        pbc=pbc,
+        cutoff=cutoff,
+    )
+
+    self_idx = torch.arange(len(positions), device=positions.device)
+    self_edge_idx = self_idx.unsqueeze(0).repeat(2, 1)
+    self_shifts_idx = torch.zeros((len(positions), 3))
+
+    edge_idx = torch.cat((self_edge_idx, edge_idx), dim=1)
+    shifts_idx = torch.cat((self_shifts_idx, shifts_idx), dim=0)
+
+    return edge_idx, shifts_idx
+
+
+def _compute_threebody(
     bond_atom_indices: torch.Tensor, n_atoms: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Core computation of three-body topology based on bond indices."""
-    if not isinstance(bond_atom_indices, torch.Tensor) or not isinstance(
-        n_atoms, torch.Tensor
-    ):
-        raise TypeError("Inputs must be torch.Tensors")
-    if bond_atom_indices.ndim != 2 or bond_atom_indices.shape[1] != 2:
-        raise ValueError("bond_atom_indices must have shape (n_bond, 2)")
-    if n_atoms.ndim != 1:
-        raise ValueError("n_atoms must be a 1D tensor")
-
-    bond_atom_indices = bond_atom_indices.long()
-    n_atoms = n_atoms.long()
     device = bond_atom_indices.device
     n_bond = bond_atom_indices.shape[0]
     n_struct = n_atoms.shape[0]
-    n_atom_total = torch.sum(n_atoms).item()
+    n_atom = torch.sum(n_atoms).item()
 
-    if n_bond == 0:
-        return (
-            torch.empty((0, 2), dtype=torch.long, device=device),
-            torch.zeros(0, dtype=torch.long, device=device),
-            torch.zeros(n_atom_total, dtype=torch.long, device=device),
-            torch.zeros(n_struct, dtype=torch.long, device=device),
-        )
-
-    central_atom_indices = bond_atom_indices[:, 0]
-    if n_atom_total > 0 and torch.max(central_atom_indices) >= n_atom_total:
-        raise ValueError(
-            f"Max atom index in bonds ({torch.max(central_atom_indices)}) "
-            f"exceeds total atoms ({n_atom_total})"
-        )
-
-    n_bond_per_atom = torch.bincount(central_atom_indices, minlength=n_atom_total)
-    n_triple_i = n_bond_per_atom * (n_bond_per_atom - 1)
-    n_triple_ij_relative = torch.clamp(n_bond_per_atom[central_atom_indices] - 1, min=0)
-
-    struct_indices_for_atoms = torch.repeat_interleave(
-        torch.arange(n_struct, device=device), n_atoms
-    )
+    # Initialize arrays exactly like Cython
+    n_bond_per_atom = torch.zeros(n_atom, dtype=torch.long, device=device)
+    n_triple_i = torch.zeros(n_atom, dtype=torch.long, device=device)
+    n_triple_ij = torch.zeros(n_bond, dtype=torch.long, device=device)
     n_triple_s = torch.zeros(n_struct, dtype=torch.long, device=device)
-    if n_atom_total > 0:
-        n_triple_s.scatter_add_(0, struct_indices_for_atoms, n_triple_i)
 
-    n_triple_total = torch.sum(n_triple_i)
-    if n_triple_total == 0:
-        bond_indices_relative = torch.empty((0, 2), dtype=torch.long, device=device)
-    else:
-        sorted_central_indices, sort_permutation = torch.sort(central_atom_indices)
-        sorted_original_bond_indices = torch.arange(n_bond, device=device)[
-            sort_permutation
-        ]
-        angle_center_atoms_mask = n_bond_per_atom > 1
-        counts_for_angle_centers = n_bond_per_atom[angle_center_atoms_mask]
-        segment_ends = torch.cumsum(counts_for_angle_centers, dim=0)
-        segment_starts = segment_ends - counts_for_angle_centers
-        triple_bond_indices_list = []
-        for i in range(len(counts_for_angle_centers)):
-            start_idx, end_idx = segment_starts[i], segment_ends[i]
-            relative_bond_indices_for_atom = sorted_original_bond_indices[
-                start_idx:end_idx
-            ]
-            pairs = torch.combinations(relative_bond_indices_for_atom, r=2)
-            if pairs.numel() == 0:
-                continue
-            if pairs.ndim == 1:
-                pairs = pairs.unsqueeze(0)
-            ordered_pairs = torch.cat((pairs, pairs.flip(dims=[1])), dim=0)
-            triple_bond_indices_list.append(ordered_pairs)
-        if triple_bond_indices_list:
-            bond_indices_relative = torch.cat(triple_bond_indices_list, dim=0)
-        else:
-            bond_indices_relative = torch.empty((0, 2), dtype=torch.long, device=device)
+    # Count bonds per atom
+    for i in range(n_bond):
+        n_bond_per_atom[bond_atom_indices[i, 0]] += 1
 
-    return bond_indices_relative, n_triple_ij_relative, n_triple_i, n_triple_s
+    # Calculate n_triple_i and n_triple_ij
+    n_triple = 0
+    start = 0
+    for i in range(n_atom):
+        n_triple_temp = n_bond_per_atom[i] * (n_bond_per_atom[i] - 1)
+        for j in range(n_bond_per_atom[i]):
+            n_triple_ij[start + j] = n_bond_per_atom[i] - 1
+        n_triple += n_triple_temp
+        n_triple_i[i] = n_triple_temp
+        start += n_bond_per_atom[i]
+
+    # Generate triple bond indices
+    triple_bond_indices = torch.zeros((n_triple, 2), dtype=torch.long, device=device)
+    start = 0
+    index = 0
+    for i in range(n_atom):
+        for j in range(n_bond_per_atom[i]):
+            for k in range(n_bond_per_atom[i]):
+                if j != k:
+                    triple_bond_indices[index, 0] = start + j
+                    triple_bond_indices[index, 1] = start + k
+                    index += 1
+        start += n_bond_per_atom[i]
+
+    # Calculate n_triple_s
+    start = 0
+    end = start
+    for i in range(n_struct):
+        end += n_atoms[i]
+        for j in range(start, end):
+            n_triple_s[i] += n_triple_i[j]
+        start = end
+
+    return triple_bond_indices, n_triple_ij, n_triple_i, n_triple_s
 
 
 def compute_threebody_indices(
@@ -183,7 +183,7 @@ def compute_threebody_indices(
 
     if filtered_list_size > 0:
         bond_indices_relative, n_triple_ij_relative, n_triple_i, n_triple_s = (
-            _compute_threebody_indices(bond_atom_indices_core, n_atoms)
+            _compute_threebody(bond_atom_indices_core, n_atoms)
         )
 
         if apply_filter:
@@ -221,7 +221,7 @@ class MatterSimModel(torch.nn.Module, ModelInterface):
         self,
         model: Potential,
         *,  # force remaining arguments to be keyword-only
-        neighbor_list_fn: Callable = vesin_nl_ts,
+        neighbor_list_fn: Callable = _mattersim_vesin_nl_ts,
         stress_weight: float = MetalUnits.pressure * 1e4,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
@@ -236,7 +236,9 @@ class MatterSimModel(torch.nn.Module, ModelInterface):
             neighbor_list_fn (Callable): Neighbor list function to use. The
                 implementation must match that of from
                 `pymatgen.optimization.neighbors.find_points_in_spheres` in order
-                to work with the pretrained model weights.
+                to work with the pretrained model weights. This function adds a
+                self-edge to the neighbor list to ensure that the model can handle
+                systems with a single atom.
             stress_weight (float): Stress weight to use to scale the stress units.
                 Defaults to value of ase.units.GPa to match MatterSimCalculator default.
             device (torch.device | str | None): Device to run the model on

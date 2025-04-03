@@ -8,18 +8,21 @@ from ase.build import bulk
 
 from torch_sim.io import atoms_to_state, state_to_atoms
 from torch_sim.models.interface import validate_model_outputs
-from torch_sim.neighbors import vesin_nl_ts
 from torch_sim.state import SimState
 
 
 try:
+    from mattersim.datasets.utils.convertor import (
+        _compute_threebody as _compute_threebody_cython,
+    )
     from mattersim.datasets.utils.convertor import (
         compute_threebody_indices as compute_threebody_indices_numpy,
     )
     from mattersim.forcefield import MatterSimCalculator, Potential
     from pymatgen.optimization.neighbors import find_points_in_spheres
 
-    from torch_sim.models.mattersim import MatterSimModel
+    from torch_sim.models.mattersim import MatterSimModel, _mattersim_vesin_nl_ts
+    from torch_sim.models.mattersim import _compute_threebody as _compute_threebody_torch
     from torch_sim.models.mattersim import (
         compute_threebody_indices as compute_threebody_indices_torch,
     )
@@ -79,12 +82,9 @@ def mattersim_calculator(
     return MatterSimCalculator(pretrained_mattersim_model, device=device)
 
 
-def sort_rows(array: np.ndarray) -> np.ndarray:
-    """Sorts rows of a 2D NumPy array lexicographically."""
-    if array.shape[0] == 0:
-        return array
-    # Use lexsort for stable row sorting
-    return array[np.lexsort(array.T[::-1])]
+def get_sorted_indices(array: np.ndarray) -> np.ndarray:
+    """Get sorted indices of a 2D NumPy array lexicographically."""
+    return np.lexsort(array.T[::-1])
 
 
 def assert_outputs_equal(
@@ -108,7 +108,11 @@ def assert_outputs_equal(
     np_n_s = np_n_s.astype(np.int64)
 
     # Compare bond_indices (order doesn't matter, sort rows first)
-    np.testing.assert_array_equal(sort_rows(torch_b_idx_np), sort_rows(np_b_idx))
+    torch_b_idx_np_indices = get_sorted_indices(torch_b_idx_np)
+    np_b_idx_indices = get_sorted_indices(np_b_idx)
+    np.testing.assert_array_equal(
+        torch_b_idx_np[torch_b_idx_np_indices], np_b_idx[np_b_idx_indices]
+    )
 
     # Compare counts (order matters)
     np.testing.assert_array_equal(torch_n_ij_np, np_n_ij)
@@ -116,13 +120,10 @@ def assert_outputs_equal(
     np.testing.assert_array_equal(torch_n_s_np, np_n_s)
 
 
-def test_compare_neighbor_and_threebody_implementations(
+def test_compare_neighbor_list_implementations(
     cu_system: SimState,
     device: torch.device,
 ) -> None:
-    """Compare vesin_nl_ts and compute_threebody_indices outputs with
-    reference implementations.
-    """
     # Get system data
     batch_mask = cu_system.batch == 0
     pos = cu_system.positions[batch_mask]
@@ -145,7 +146,7 @@ def test_compare_neighbor_and_threebody_implementations(
     )
 
     # torch_sim implementation
-    edge_idx, shifts_idx = vesin_nl_ts(
+    edge_idx, shifts_idx = _mattersim_vesin_nl_ts(
         positions=pos,
         cell=cell,
         pbc=cu_system.pbc,
@@ -153,23 +154,87 @@ def test_compare_neighbor_and_threebody_implementations(
     )
 
     # Convert torch outputs to numpy for comparison
-    edge_idx_np = edge_idx.cpu().numpy()
+    edge_idx_np = edge_idx.cpu().numpy().T
     shifts_idx_np = shifts_idx.cpu().numpy()
 
     # Sort both outputs for comparison
     pymatgen_pairs = np.stack([center_indices, neighbor_indices], axis=1)
-    pymatgen_sorted = sort_rows(pymatgen_pairs)
-    torch_pairs = sort_rows(edge_idx_np.T)
+    pymatgen_pairs_indices = get_sorted_indices(pymatgen_pairs)
+    torch_pairs_indices = get_sorted_indices(edge_idx_np)
 
     # Compare neighbor lists
-    np.testing.assert_array_almost_equal(pymatgen_sorted, torch_pairs)
-    np.testing.assert_array_almost_equal(images, shifts_idx_np)
+    np.testing.assert_array_almost_equal(
+        pymatgen_pairs[pymatgen_pairs_indices], edge_idx_np[torch_pairs_indices]
+    )
+    np.testing.assert_array_almost_equal(
+        images[pymatgen_pairs_indices], shifts_idx_np[torch_pairs_indices]
+    )
 
-    # 2. Compare threebody indices
+
+def test_compare_threebody_implementations(
+    cu_system: SimState,
+    device: torch.device,
+) -> None:
+    """Compare torch and Cython implementations of three-body computation directly."""
+    # Get system data
+    batch_mask = cu_system.batch == 0
+    pos = cu_system.positions[batch_mask]
+    cell = cu_system.cell[0]
+
+    # Get neighbor lists first
+    edge_idx, _shifts_idx = _mattersim_vesin_nl_ts(
+        positions=pos,
+        cell=cell,
+        pbc=cu_system.pbc,
+        cutoff=torch.tensor(3.0, device=device),
+    )
+
+    # Prepare inputs for both implementations
+    bond_atom_indices = torch.transpose(edge_idx, 1, 0)
+    n_atoms = torch.tensor([pos.shape[0]], device=device)
+
+    # Convert to numpy for Cython implementation
+    bond_atom_indices_np = bond_atom_indices.cpu().numpy().astype(np.int32)
+    n_atoms_np = n_atoms.cpu().numpy().astype(np.int32)
+
+    # Get torch implementation results
+    torch_out = _compute_threebody_torch(bond_atom_indices, n_atoms)
+
+    # Get Cython implementation results
+    cython_out = _compute_threebody_cython(
+        np.ascontiguousarray(bond_atom_indices_np, dtype="int32"),
+        np.array(n_atoms_np, dtype="int32"),
+    )
+
+    # Compare outputs
+    assert_outputs_equal(torch_out, cython_out)
+
+
+def test_compare_threebody_indicies_implementations(
+    cu_system: SimState,
+    device: torch.device,
+) -> None:
+    """Compare torch and Cython implementations of three-body computation directly."""
+    # Get system data
+    batch_mask = cu_system.batch == 0
+    pos = cu_system.positions[batch_mask]
+    cell = cu_system.cell[0]
+
+    two_body_cutoff = 4.0
+    three_body_cutoff = 3.0
+
+    # Get neighbor lists first
+    edge_idx, shifts_idx = _mattersim_vesin_nl_ts(
+        positions=pos,
+        cell=cell,
+        pbc=cu_system.pbc,
+        cutoff=torch.tensor(two_body_cutoff, device=device),
+    )
+
     # Calculate distances for torch implementation
     shifts = torch.mm(shifts_idx, cu_system.cell[0])
     edge_vec = (
-        cu_system.positions[0][edge_idx[0]] - cu_system.positions[0][edge_idx[1]] - shifts
+        cu_system.positions[edge_idx[0]] - cu_system.positions[edge_idx[1]] - shifts
     )
     distances_torch = torch.norm(edge_vec, dim=-1)
 
@@ -179,19 +244,19 @@ def test_compare_neighbor_and_threebody_implementations(
         bond_length=distances_torch,
         n_atoms=torch.tensor([pos.shape[0]]),
         atomic_number=cu_system.atomic_numbers[: pos.shape[0]],
-        threebody_cutoff=cutoff,
+        threebody_cutoff=three_body_cutoff,
     )
 
     # NumPy implementation
     numpy_out = compute_threebody_indices_numpy(
-        bond_atom_indices=edge_idx_np.T.astype(np.int32),
+        bond_atom_indices=edge_idx.cpu().numpy().T.astype(np.int32),
         bond_length=distances_torch.cpu().numpy().astype(np.float32),
         n_atoms=np.array([pos.shape[0]], dtype=np.int32),
         atomic_number=cu_system.atomic_numbers[: pos.shape[0]]
         .cpu()
         .numpy()
         .astype(np.int32),
-        threebody_cutoff=cutoff,
+        threebody_cutoff=three_body_cutoff,
     )
 
     # Compare outputs
@@ -206,7 +271,7 @@ def test_mattersim_initialization(
         model=pretrained_mattersim_model,
         device=device,
     )
-    assert model.neighbor_list_fn == vesin_nl_ts
+    assert model.neighbor_list_fn == _mattersim_vesin_nl_ts
     assert model._device == device  # noqa: SLF001
     assert model.stress_weight == ase.units.GPa
 
